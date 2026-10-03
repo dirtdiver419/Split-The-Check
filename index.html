@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!--
+    Only this site's own files may load. No third-party scripts, no fonts from elsewhere,
+    no network calls out. 'wasm-unsafe-eval' is required for the on-device text reader.
+  -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; img-src 'self' blob:; style-src 'self'; manifest-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#1d3a32">
+  <title>Split the check</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/style.css">
+  <script src="vendor/tesseract/tesseract.min.js" defer></script>
+  <script src="js/app.js" type="module"></script>
+</head>
+<body>
+  <header class="masthead">
+    <h1>Split the check</h1>
+    <p>Snap the receipt and say who had what. Tax and tip follow what each person ordered. The photo is read on this device and never uploaded or saved.</p>
+  </header>
+
+  <main>
+    <section class="sheet" aria-labelledby="h-receipt">
+      <h2 id="h-receipt"><span class="step">1</span> Receipt</h2>
+
+      <div id="receipt-empty">
+        <label class="btn btn-primary btn-block file-btn">
+          <input id="photo" type="file" accept="image/*">
+          Take or choose a photo
+        </label>
+        <button id="manual" class="btn btn-quiet" type="button">Type the items in instead</button>
+      </div>
+
+      <div id="receipt-busy" class="busy" hidden>
+        <p id="busy-text" role="status" aria-live="polite">Reading the receipt…</p>
+        <progress id="busy-bar" max="100" value="0"></progress>
+      </div>
+
+      <div id="receipt-done" hidden>
+        <figure class="preview">
+          <img id="preview-img" alt="Your receipt photo">
+        </figure>
+        <p id="receipt-note" class="note"></p>
+        <div class="row">
+          <label class="btn btn-quiet file-btn">
+            <input id="photo-again" type="file" accept="image/*">
+            Use a different photo
+          </label>
+          <button id="photo-remove" class="btn btn-quiet" type="button">Remove photo</button>
+        </div>
+      </div>
+
+      <p id="receipt-error" class="error" role="alert" hidden></p>
+    </section>
+
+    <section class="sheet" aria-labelledby="h-people">
+      <h2 id="h-people"><span class="step">2</span> People</h2>
+      <div class="row add-person">
+        <label class="sr-only" for="person-name">Name</label>
+        <input id="person-name" type="text" maxlength="30" autocomplete="off" placeholder="Add a name">
+        <button id="person-add" class="btn btn-primary" type="button">Add</button>
+      </div>
+      <ul id="people" class="people" aria-label="People at the table"></ul>
+      <p id="people-hint" class="note">Add everyone who's splitting, including you. Mark whoever covered the bill as the payer so everyone knows who to pay back.</p>
+    </section>
+
+    <section class="sheet" aria-labelledby="h-items">
+      <h2 id="h-items"><span class="step">3</span> Who had what</h2>
+      <p id="items-hint" class="note">Items from the receipt show up here. Fix any the reader got wrong, then tap the people who had each one. Tap several people for shared plates.</p>
+      <ol id="items" class="items"></ol>
+      <button id="item-add" class="btn btn-quiet" type="button">Add an item</button>
+      <p id="items-check" class="check" hidden></p>
+    </section>
+
+    <section class="sheet" aria-labelledby="h-extras">
+      <h2 id="h-extras"><span class="step">4</span> Tax and tip</h2>
+      <div class="field">
+        <label for="tax">Tax</label>
+        <div class="money"><span aria-hidden="true">$</span><input id="tax" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00"></div>
+      </div>
+
+      <fieldset class="field">
+        <legend>Tip</legend>
+        <div class="seg" role="radiogroup" aria-label="Tip type">
+          <label><input type="radio" name="tip-mode" value="percent" checked> Percent</label>
+          <label><input type="radio" name="tip-mode" value="amount"> Amount</label>
+        </div>
+        <div id="tip-percent-wrap">
+          <div class="chips" id="tip-presets">
+            <button type="button" class="chip" data-pct="15" aria-pressed="false">15%</button>
+            <button type="button" class="chip" data-pct="18" aria-pressed="false">18%</button>
+            <button type="button" class="chip" data-pct="20" aria-pressed="true">20%</button>
+            <button type="button" class="chip" data-pct="22" aria-pressed="false">22%</button>
+          </div>
+          <div class="money pct"><input id="tip-pct" type="text" inputmode="decimal" autocomplete="off" value="20" aria-label="Tip percent"><span aria-hidden="true">%</span></div>
+          <p class="note">Percent of the food and drink, before tax.</p>
+        </div>
+        <div id="tip-amount-wrap" hidden>
+          <div class="money"><span aria-hidden="true">$</span><input id="tip-amt" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00" aria-label="Tip amount"></div>
+        </div>
+      </fieldset>
+    </section>
+
+    <section aria-labelledby="h-split" class="results">
+      <h2 id="h-split" class="results-title">The split</h2>
+      <p id="results-blocked" class="blocked"></p>
+      <div id="slips" class="slips"></div>
+      <p id="results-foot" class="results-foot" hidden></p>
+    </section>
+
+    <div class="reset-wrap">
+      <button id="reset" class="btn btn-ghost" type="button">Start over</button>
+    </div>
+  </main>
+
+  <footer class="foot">
+    <p>Nothing on this page is stored. Close or refresh it and everything's gone.</p>
+  </footer>
+</body>
+</html>
