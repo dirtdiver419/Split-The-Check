@@ -80,3 +80,27 @@ assert.equal(rebuilt, 'Iced Tea 3.75\nFries 9.00');
 const best = bestParse('Iced Tea\nFries\n3.75\n9.00', rebuilt);
 assert.equal(best.items.length, 2);
 console.log('row rebuild tests passed');
+
+import { pairColumns } from '../js/parse.js';
+const lens = `THE BLUE DOOR
+123 Main Street
+2 Margherita Pizza
+Caesar Salad
+Iced Tea
+28.00
+12.50
+3.75
+Subtotal
+Sales Tax
+44.25
+3.93
+Thank you!`;
+const paired = pairColumns(lens);
+const pr = bestParse(lens, paired);
+assert.deepEqual(pr.items.map(i => [i.name, i.cents]), [['2 Margherita Pizza', 2800], ['Caesar Salad', 1250], ['Iced Tea', 375]]);
+assert.equal(pr.subtotalCents, 4425); assert.equal(pr.taxCents, 393);
+// already-clean text is left alone
+assert.equal(pairColumns('Iced Tea 3.75\nFries 9.00'), 'Iced Tea 3.75\nFries 9.00');
+// more prices than names: untouched
+assert.equal(bestParse('Tea\n3.75\n9.00', pairColumns('Tea\n3.75\n9.00')).items.length, 0);
+console.log('paste pairing tests passed');

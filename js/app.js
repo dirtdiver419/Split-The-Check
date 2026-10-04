@@ -1,5 +1,5 @@
 import { parseMoney, parsePercent, formatMoney, centsToInput, computeSplit } from './split.js';
-import { bestParse, textFromWords, wordsFromBlocks } from './parse.js';
+import { bestParse, pairColumns, textFromWords, wordsFromBlocks } from './parse.js';
 
 // Everything lives in this object, in memory only. No localStorage, no cookies,
 // no IndexedDB, no network writes. Refreshing the page wipes it.
@@ -13,7 +13,7 @@ const state = {
   scanToken: 0,
 };
 
-const LIMITS = { people: 30, items: 150, nameLen: 30, itemLen: 60, fileBytes: 25 * 1024 * 1024 };
+const LIMITS = { people: 30, items: 150, nameLen: 30, itemLen: 60, fileBytes: 25 * 1024 * 1024, pasteChars: 20000 };
 
 let idCounter = 0;
 const newId = () => `id${++idCounter}`;
@@ -103,14 +103,27 @@ function renderPeople() {
 
 /* ------------------------------------------------------------------- items */
 
+/** A row with no name and no price is a placeholder, not an item. */
+const isBlank = (item) => !item.name && item.cents === null && !item.rawPrice;
+const realItems = () => state.items.filter((i) => !isBlank(i));
+
+function focusItem(id, field = 0) {
+  document.querySelectorAll(`[data-item="${id}"] input`)[field]?.focus();
+}
+
 function addItem(name = '', cents = null, focus = true) {
+  const last = state.items[state.items.length - 1];
+  if (focus && !name && cents === null && last && isBlank(last)) {
+    focusItem(last.id);
+    return last;
+  }
   if (state.items.length >= LIMITS.items) return null;
-  const item = { id: newId(), name: cleanText(name, LIMITS.itemLen), cents, assigned: new Set() };
+  const item = { id: newId(), name: cleanText(name, LIMITS.itemLen), cents, rawPrice: '', assigned: new Set() };
   state.items.push(item);
   if (focus) {
     renderItems();
     renderResults();
-    document.querySelector(`[data-item="${item.id}"] input`)?.focus();
+    focusItem(item.id);
   }
   return item;
 }
@@ -171,7 +184,13 @@ function renderItems() {
       maxlength: LIMITS.itemLen,
       autocomplete: 'off',
       placeholder: 'Item',
+      enterkeyhint: 'next',
       'aria-label': `Item ${idx + 1} name`,
+    });
+    nameInput.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || e.isComposing) return;
+      e.preventDefault();
+      priceInput.focus();
     });
     nameInput.addEventListener('input', () => {
       item.name = cleanText(nameInput.value, LIMITS.itemLen);
@@ -183,6 +202,7 @@ function renderItems() {
       inputmode: 'decimal',
       autocomplete: 'off',
       placeholder: '0.00',
+      enterkeyhint: 'next',
       value: item.cents === null ? '' : centsToInput(item.cents),
       'aria-label': `Item ${idx + 1} price`,
       'aria-invalid': 'false',
@@ -190,9 +210,18 @@ function renderItems() {
     priceInput.addEventListener('input', () => {
       const cents = parseMoney(priceInput.value);
       item.cents = cents;
+      item.rawPrice = priceInput.value.trim().slice(0, 20);
       priceInput.setAttribute('aria-invalid', String(cents === null && priceInput.value.trim() !== ''));
       renderCheck();
       renderResults();
+    });
+    priceInput.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || e.isComposing) return;
+      e.preventDefault();
+      const pos = state.items.indexOf(item);
+      const next = state.items[pos + 1];
+      if (next) focusItem(next.id);
+      else if (!isBlank(item)) addItem();
     });
     priceInput.addEventListener('blur', () => {
       if (item.cents !== null) priceInput.value = centsToInput(item.cents);
@@ -229,7 +258,7 @@ function itemsSum() {
 function renderCheck() {
   const out = $('items-check');
   const { subtotalCents } = state.receipt;
-  if (subtotalCents === null || state.items.length === 0) {
+  if (subtotalCents === null || realItems().length === 0) {
     out.hidden = true;
     return;
   }
@@ -285,12 +314,12 @@ function setTipMode(mode) {
 
 function blockerMessage(tax, tip) {
   if (!state.people.length) return 'Add the people splitting the bill.';
-  if (!state.items.length) return 'Add the items from the receipt.';
-  const badPrice = state.items.findIndex((i) => i.cents === null);
+  if (!realItems().length) return 'Add the items from the receipt.';
+  const badPrice = state.items.findIndex((i) => i.cents === null && !isBlank(i));
   if (badPrice !== -1) return `Item ${badPrice + 1} needs a price.`;
   if (tax === null) return 'The tax amount doesn’t look like a dollar amount.';
   if (tip === null) return state.tipMode === 'percent' ? 'The tip percent should be a number from 0 to 100.' : 'The tip amount doesn’t look like a dollar amount.';
-  const open = state.items.filter((i) => i.assigned.size === 0);
+  const open = realItems().filter((i) => i.assigned.size === 0);
   if (open.length) {
     const names = open.slice(0, 3).map((i) => i.name || 'unnamed item').join(', ');
     const more = open.length > 3 ? ` and ${open.length - 3} more` : '';
@@ -314,7 +343,7 @@ function renderResults() {
     return;
   }
 
-  const result = computeSplit({ people: state.people, items: state.items, taxCents: tax, tipCents: tip });
+  const result = computeSplit({ people: state.people, items: realItems(), taxCents: tax, tipCents: tip });
   const payer = state.people.find((p) => p.id === state.payerId);
 
   const slips = result.rows.map((row) => {
@@ -370,6 +399,7 @@ function showReceiptState(which) {
   $('receipt-empty').hidden = which !== 'empty';
   $('receipt-busy').hidden = which !== 'busy';
   $('receipt-done').hidden = which !== 'done';
+  $('paste').hidden = which === 'busy';
 }
 
 function showError(msg) {
@@ -502,30 +532,62 @@ async function scan(file) {
   }
 }
 
-function applyParsed(parsed) {
-  state.items = [];
-  parsed.items.slice(0, LIMITS.items).forEach((i) => addItem(i.name, i.cents, false));
-  state.receipt = { subtotalCents: parsed.subtotalCents, totalCents: parsed.totalCents };
+function applyParsed(parsed, { append = false, noteEl = $('receipt-note') } = {}) {
+  state.items = append ? state.items.filter((i) => !isBlank(i)) : [];
+  const room = LIMITS.items - state.items.length;
+  parsed.items.slice(0, Math.max(0, room)).forEach((i) => addItem(i.name, i.cents, false));
 
-  $('tax').value = parsed.taxCents !== null ? centsToInput(parsed.taxCents) : '';
-  if (parsed.tipCents !== null && parsed.tipCents > 0) {
-    $('tip-amt').value = centsToInput(parsed.tipCents);
-    setTipMode('amount');
+  if (append) {
+    // Only fill in receipt figures the new text actually had.
+    if (parsed.subtotalCents !== null) state.receipt.subtotalCents = parsed.subtotalCents;
+    if (parsed.totalCents !== null) state.receipt.totalCents = parsed.totalCents;
+    if (parsed.taxCents !== null && !$('tax').value.trim()) $('tax').value = centsToInput(parsed.taxCents);
+    if (parsed.tipCents !== null && parsed.tipCents > 0 && !$('tip-amt').value.trim()) {
+      $('tip-amt').value = centsToInput(parsed.tipCents);
+      setTipMode('amount');
+    }
+  } else {
+    state.receipt = { subtotalCents: parsed.subtotalCents, totalCents: parsed.totalCents };
+    $('tax').value = parsed.taxCents !== null ? centsToInput(parsed.taxCents) : '';
+    if (parsed.tipCents !== null && parsed.tipCents > 0) {
+      $('tip-amt').value = centsToInput(parsed.tipCents);
+      setTipMode('amount');
+    }
   }
 
-  const n = parsed.items.length;
-  const note = $('receipt-note');
+  const n = Math.min(parsed.items.length, Math.max(0, room));
+  const note = noteEl;
   if (n === 0) {
-    note.textContent = 'No prices found in that photo. Try a sharper shot, or add the items by hand below.';
+    note.textContent = append
+      ? 'No prices found in that text. Each item needs its price on the same line, like “Iced Tea 3.75”.'
+      : 'No prices found in that photo. Try a sharper shot, or add the items by hand below.';
   } else {
     const bits = [`Found ${n} item${n === 1 ? '' : 's'}`];
     if (parsed.taxCents !== null) bits.push(`${formatMoney(parsed.taxCents)} tax`);
     if (parsed.tipCents !== null) bits.push(`${formatMoney(parsed.tipCents)} tip`);
-    note.textContent = `${bits.join(', ')}. Check them against the photo before splitting.`;
+    note.textContent = `${bits.join(', ')}. Check them against the ${append ? 'receipt' : 'photo'} before splitting.`;
   }
 
   renderItems();
   renderResults();
+}
+
+/* ------------------------------------------------------------------- paste */
+
+function setPasteOpen(open) {
+  $('paste-panel').hidden = !open;
+  $('paste-toggle').hidden = open;
+  $('paste-toggle').setAttribute('aria-expanded', String(open));
+  if (!open) $('paste-text').value = '';
+  else $('paste-text').focus();
+}
+
+function readPasted() {
+  const raw = $('paste-text').value.slice(0, LIMITS.pasteChars);
+  if (!raw.trim()) { $('paste-text').focus(); return; }
+  const parsed = bestParse(raw, pairColumns(raw));
+  applyParsed(parsed, { append: true, noteEl: $('paste-note') });
+  if (parsed.items.length) setPasteOpen(false); // clears the box
 }
 
 /* ------------------------------------------------------------------- reset */
@@ -544,6 +606,8 @@ function resetAll() {
   $('tip-pct').value = '20';
   $('person-name').value = '';
   $('receipt-note').textContent = '';
+  $('paste-note').textContent = '';
+  setPasteOpen(false);
   syncTipPresets();
   setTipMode('percent');
   showError('');
@@ -595,6 +659,9 @@ document.querySelectorAll('input[name="tip-mode"]').forEach((r) => {
   r.addEventListener('change', () => setTipMode(r.value));
 });
 $('reset').addEventListener('click', resetAll);
+$('paste-toggle').addEventListener('click', () => { $('paste-note').textContent = ''; setPasteOpen(true); });
+$('paste-cancel').addEventListener('click', () => setPasteOpen(false));
+$('paste-read').addEventListener('click', readPasted);
 
 renderPeople();
 renderItems();

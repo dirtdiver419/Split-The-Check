@@ -55,6 +55,20 @@
       </div>
 
       <p id="receipt-error" class="error" role="alert" hidden></p>
+
+      <div id="paste" class="paste">
+        <button id="paste-toggle" class="btn btn-quiet" type="button" aria-expanded="false" aria-controls="paste-panel">Paste receipt text</button>
+        <div id="paste-panel" class="paste-panel" hidden>
+          <label for="paste-text">Receipt text</label>
+          <textarea id="paste-text" rows="7" maxlength="20000" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Caesar Salad 12.50&#10;Iced Tea 3.75&#10;Sales Tax 1.45"></textarea>
+          <div class="row">
+            <button id="paste-read" class="btn btn-primary" type="button">Read text</button>
+            <button id="paste-cancel" class="btn btn-quiet" type="button">Cancel</button>
+          </div>
+          <p class="note">Copied text from Google Lens or similar works too. Items get added to the list below, not swapped in.</p>
+        </div>
+        <p id="paste-note" class="note" role="status" aria-live="polite"></p>
+      </div>
     </section>
 
     <section class="sheet" aria-labelledby="h-people">

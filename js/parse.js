@@ -117,3 +117,42 @@ export function bestParse(...texts) {
   };
   return texts.map(parseReceiptText).reduce((best, r) => (score(r) > score(best) ? r : best));
 }
+
+const PRICE_ONLY = /^[-(]?\s?\$?\s?\d{1,6}[.,]\s?\d{2}\)?(?:\s+[A-Za-z]{1,2})?$/;
+
+/**
+ * Copied text (e.g. from Google Lens) often comes out as a block of item names
+ * followed by a block of prices. Re-pair them line by line. When there are more
+ * names than prices, the extras are assumed to be header lines (restaurant name,
+ * address) at the top of the block, so the last names get paired.
+ */
+export function pairColumns(text) {
+  if (typeof text !== 'string') return '';
+  const lines = text.split(/\r?\n/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const isPrice = (l) => PRICE_ONLY.test(l);
+  const isLabel = (l) => !isPrice(l) && /\p{L}{2,}/u.test(l) && !PRICE_AT_END.test(l);
+
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (!isLabel(lines[i])) { out.push(lines[i]); i++; continue; }
+
+    let j = i;
+    while (j < lines.length && isLabel(lines[j])) j++;
+    let k = j;
+    while (k < lines.length && isPrice(lines[k])) k++;
+
+    const labels = lines.slice(i, j);
+    const prices = lines.slice(j, k);
+    if (prices.length > 0 && labels.length >= prices.length) {
+      const extra = labels.length - prices.length;
+      out.push(...labels.slice(0, extra));
+      prices.forEach((p, n) => out.push(`${labels[extra + n]} ${p}`));
+      i = k;
+    } else {
+      out.push(...labels);
+      i = j;
+    }
+  }
+  return out.join('\n');
+}

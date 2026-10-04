@@ -16,7 +16,7 @@ Add it to your phone's home screen from the browser's share menu so it opens lik
 
 ## Using it
 
-1. Take or choose a photo of the receipt. Flat, well lit, and filling the frame works best.
+1. Take or choose a photo of the receipt. Flat, well lit, and filling the frame works best. You can also skip the photo: tap **Type the items in instead**, or **Paste receipt text** to paste text copied from Google Lens or anywhere else. When typing, Enter moves from name to price to the next item.
 2. Add everyone at the table and mark who paid.
 3. Check the items against the photo and fix anything misread. If the receipt shows a subtotal, the page tells you whether the items add up to it.
 4. Tap the people who had each item. Tap several for shared plates; the price is split evenly between them.
