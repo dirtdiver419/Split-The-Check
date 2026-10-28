@@ -19,9 +19,21 @@ Add it to your phone's home screen from the browser's share menu so it opens lik
 1. Take or choose a photo of the receipt. Flat, well lit, and filling the frame works best. You can also skip the photo: tap **Type the items in instead**, or **Paste receipt text** to paste text copied from Google Lens or anywhere else. When typing, Enter moves from name to price to the next item.
 2. Add everyone at the table and mark who paid.
 3. Check the items against the photo and fix anything misread. If the receipt shows a subtotal, the page tells you whether the items add up to it.
-4. Tap the people who had each item. Tap several for shared plates; the price is split evenly between them.
+4. Tap the people who had each item. Tap several for shared plates; the price is split evenly between them. For uneven splits, tap **Uneven shares** and use the + and − buttons (Ana 3, Ben 2 means Ana pays 3/5).
 5. Confirm the tax and pick a tip. Percent tips are calculated on the pre-tax food and drink total.
-6. Screenshot the results.
+6. Screenshot the results, or tap **Copy** under someone's share (or **Copy everyone's shares**) and paste it into a text.
+
+### What the reader handles
+
+- **Add-ons** like "-Boiled Egg $2.00" are tucked under their dish and go to the same people. Tap **Change** to assign one separately.
+- **Long dish names** printed on two lines ("Chicken Katsu" / "Udon") are joined when both lines are clearly the same text size. Joined names are tagged, and **Split apart** undoes it. If the items come up short of the subtotal, those tags turn amber so you check them first.
+- **Quantities** ("2 Pizza", "2x Coke", "Fries x2", "2 @ 7.50") are recognized. **Split into 2** turns one line into separate rows so different people can take each.
+- **Lost prices:** a line that starts with a quantity but lost its price stays as a row with a blank price. If exactly one item is missing its price, the gap to the subtotal is filled in and marked amber. The split won't calculate until you tap **Looks right** or type the price.
+- **Lost lines:** if the items come up short of the subtotal, **Add the missing $X** creates a row with that amount for you to name.
+- **Fees and surcharges** (kitchen appreciation, health mandates, card surcharges) are split like tax, by what each person ordered.
+- **Auto-gratuity** is filled in as the tip with a warning so nobody tips twice. Tip guide tables, voided items, VAT-included lines and payment lines are ignored. A photo of the card slip instead of the itemized check gets flagged.
+- **Spelling:** the reader's i/l mix-ups ("Bolled", "Terlyaki") are fixed using a list of common menu words.
+- **Photos:** shadows and uneven light are evened out before reading. If the items don't match the subtotal, the photo is read a second time without that step and the better result is kept. Tilted photos are handled by measuring text size with the reader's tilt-corrected line heights.
 
 ## What it stores
 
@@ -40,7 +52,8 @@ GitHub's servers will log ordinary web requests (IP address, the page files your
 - **Strict Content Security Policy** (in `index.html`): scripts, styles, workers and network requests are limited to this site's own files. Images may come only from this site or from in-memory `blob:` URLs. Forms, plugins, and `<base>` tags are blocked. `'wasm-unsafe-eval'` is allowed because the text reader is WebAssembly; plain JavaScript `eval` stays blocked.
 - **No HTML injection.** Item names, people's names and everything read from the receipt are inserted as text, never as HTML, so a receipt line or a name like `<img onerror=...>` shows up as literal characters.
 - **Input limits:** 30 people, 150 items, 25 MB photos, amounts capped at $1,000,000, names and item labels length-limited.
-- **No referrer** is sent when leaving the page.
+- **No referrer** is sent when leaving the page, and a `noindex` tag asks search engines not to list it.
+- **Copying** uses the browser's clipboard only when you tap a Copy button. Nothing is read from the clipboard.
 - **Exact money math:** all amounts are integer cents. Leftover pennies from splitting are handed out so every share adds up to the exact total.
 
 One limitation: GitHub Pages doesn't let you set HTTP headers, so the `frame-ancestors` protection against being embedded in another site's frame isn't available. The page has no logins or actions worth hijacking, so this is a low risk.
@@ -52,11 +65,12 @@ index.html                  page markup and security policy
 css/style.css               styles
 js/app.js                   interface and scanning
 js/split.js                 money parsing and the split math
-js/parse.js                 turns receipt text into items, tax and tip
+js/parse.js                 turns receipt text into items, add-ons, tax, fees and tip
+js/words.js                 menu word list for spelling repairs
 vendor/tesseract/           Tesseract.js 7.0.0 (Apache-2.0)
 vendor/tesseract-core/      Tesseract.js-core 7.0.0 WebAssembly builds (Apache-2.0)
 vendor/lang/                English language data, 4.0.0_best_int (see NOTICE.txt)
-tests/unit.test.mjs         run with `node tests/unit.test.mjs`
+tests/unit.test.mjs         37 tests incl. 20 receipt formats; run with `node tests/unit.test.mjs`
 ```
 
 ## Accuracy

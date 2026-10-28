@@ -98,6 +98,13 @@
         <div class="money"><span aria-hidden="true">$</span><input id="tax" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00"></div>
       </div>
 
+      <div class="field" id="fee-wrap" hidden>
+        <label for="fee">Fees and surcharges</label>
+        <div class="money"><span aria-hidden="true">$</span><input id="fee" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00"></div>
+        <p class="note">Kitchen, health-mandate or card fees. Split like tax, by what each person ordered.</p>
+      </div>
+      <button id="fee-show" class="linkish fee-show" type="button">Add a fee or surcharge</button>
+
       <fieldset class="field">
         <legend>Tip</legend>
         <div class="seg" role="radiogroup" aria-label="Tip type">
@@ -117,6 +124,7 @@
         <div id="tip-amount-wrap" hidden>
           <div class="money"><span aria-hidden="true">$</span><input id="tip-amt" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00" aria-label="Tip amount"></div>
         </div>
+        <p id="tip-note" class="tip-note" hidden></p>
       </fieldset>
     </section>
 
@@ -124,7 +132,13 @@
       <h2 id="h-split" class="results-title">The split</h2>
       <p id="results-blocked" class="blocked"></p>
       <div id="slips" class="slips"></div>
+      <button id="copy-all" class="btn copy-all" type="button" hidden>Copy everyone's shares</button>
       <p id="results-foot" class="results-foot" hidden></p>
+      <div id="copy-fallback" class="copy-fallback" hidden>
+        <label for="copy-fallback-text">Your browser blocked copying. Press and hold the text below, then choose Copy.</label>
+        <textarea id="copy-fallback-text" rows="9" readonly></textarea>
+        <button id="copy-fallback-close" class="btn btn-quiet" type="button">Done</button>
+      </div>
     </section>
 
     <div class="reset-wrap">
