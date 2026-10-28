@@ -99,18 +99,29 @@ export function allocateProportional(amount, weights) {
   return parts.map((p) => p * sign);
 }
 
+/** Proportional split where leftover pennies rotate with `offset`, so ties don't always favor the same person. */
+export function allocateShares(amount, weights, offset = 0) {
+  const n = weights.length;
+  if (n === 0) return [];
+  const k = ((offset % n) + n) % n;
+  const rotated = weights.slice(k).concat(weights.slice(0, k));
+  const parts = allocateProportional(amount, rotated);
+  return parts.slice(n - k).concat(parts.slice(0, n - k));
+}
+
 /**
  * Work out what everyone owes.
  *
- * people:  [{ id, name }]
- * items:   [{ id, name, cents, assigned: Set<personId> }]
- * taxCents, tipCents: integers (cents)
+ * people: [{ id, name }]
+ * items:  [{ name, cents, addon?, assigned: Map<personId, shares> }]
+ * taxCents, tipCents, feeCents: integers (cents)
  *
- * Tax and tip are spread across people in proportion to their item subtotal.
+ * Each item is divided by shares (Ana 3, Ben 2 -> 3/5 and 2/5).
+ * Tax, tip and fees are spread across people in proportion to their food subtotal.
  */
-export function computeSplit({ people, items, taxCents, tipCents }) {
+export function computeSplit({ people, items, taxCents, tipCents, feeCents = 0 }) {
   const byId = new Map(
-    people.map((p) => [p.id, { id: p.id, name: p.name, lines: [], subtotal: 0, tax: 0, tip: 0, total: 0 }])
+    people.map((p) => [p.id, { id: p.id, name: p.name, lines: [], subtotal: 0, tax: 0, tip: 0, fee: 0, total: 0 }])
   );
 
   let itemsTotal = 0;
@@ -118,20 +129,27 @@ export function computeSplit({ people, items, taxCents, tipCents }) {
 
   items.forEach((item, index) => {
     itemsTotal += item.cents;
-    const who = people.filter((p) => item.assigned.has(p.id)).map((p) => p.id);
+    const who = people.filter((p) => (item.assigned.get(p.id) || 0) > 0);
     if (who.length === 0) {
       unassigned.push(item);
       return;
     }
-    const shares = splitEven(item.cents, who.length, index);
-    who.forEach((pid, k) => {
-      const row = byId.get(pid);
+    const shares = who.map((p) => Math.max(1, Math.min(9, item.assigned.get(p.id) | 0)));
+    const totalShares = shares.reduce((a, b) => a + b, 0);
+    const even = shares.every((x) => x === shares[0]);
+    const parts = allocateShares(item.cents, shares, index);
+    who.forEach((p, k) => {
+      const row = byId.get(p.id);
       row.lines.push({
         name: item.name || 'Item',
-        cents: shares[k],
-        sharedWith: who.length,
+        cents: parts[k],
+        addon: Boolean(item.addon),
+        people: who.length,
+        shares: shares[k],
+        totalShares,
+        even,
       });
-      row.subtotal += shares[k];
+      row.subtotal += parts[k];
     });
   });
 
@@ -139,10 +157,12 @@ export function computeSplit({ people, items, taxCents, tipCents }) {
   const weights = rows.map((r) => r.subtotal);
   const taxParts = allocateProportional(taxCents, weights);
   const tipParts = allocateProportional(tipCents, weights);
+  const feeParts = allocateProportional(feeCents, weights);
   rows.forEach((r, i) => {
     r.tax = taxParts[i];
     r.tip = tipParts[i];
-    r.total = r.subtotal + r.tax + r.tip;
+    r.fee = feeParts[i];
+    r.total = r.subtotal + r.tax + r.tip + r.fee;
   });
 
   return {
@@ -150,7 +170,8 @@ export function computeSplit({ people, items, taxCents, tipCents }) {
     itemsTotal,
     taxCents,
     tipCents,
-    grandTotal: itemsTotal + taxCents + tipCents,
+    feeCents,
+    grandTotal: itemsTotal + taxCents + tipCents + feeCents,
     unassigned,
   };
 }
