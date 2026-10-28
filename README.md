@@ -4,19 +4,9 @@ Take a photo of a restaurant receipt, tap who had what, and get each person's sh
 
 Everything runs in the browser. The receipt is read on your own phone by an open-source text reader (Tesseract), so the photo never leaves the device, and nothing is saved.
 
+Open the app: https://dirtdiver419.github.io/Split-The-Check/
+
 See [CHANGELOG.md](CHANGELOG.md) for the version history.
-
-## Putting it on GitHub Pages
-
-1. Create a repository on GitHub, for example `split-the-check`. Free accounts need it to be public.
-2. Upload the contents of this folder to the root of the repository, keeping the folder structure. Upload what's inside the folder, not the folder itself.
-3. In the repository, go to **Settings → Pages**.
-4. Under **Build and deployment**, set **Source** to *Deploy from a branch*, choose `main` and `/ (root)`, and save.
-5. After a minute or two the site is live at `https://<your-username>.github.io/<repo-name>/`.
-
-To make it open like an app, add it to your phone's home screen from the browser menu.
-
-To update the site later, use **Add file → Upload files** and drag in the new files. Phones may show the old version for about 10 minutes while their cache expires.
 
 ## Using it
 
