@@ -1,62 +1,73 @@
 # Split the check
 
-Take a photo of a restaurant receipt, say who had what, and get each person's share. Tax and tip are divided in proportion to what each person ordered, so the person who had a salad doesn't subsidize the person who had the ribeye.
+Take a photo of a restaurant receipt, tap who had what, and get each person's share. Tax, tip and fees are divided in proportion to what each person ordered, so the person who had a salad doesn't pay for part of someone else's ribeye.
 
-It runs entirely in the browser. The receipt is read on your own phone or computer by an open-source text reader (Tesseract), so the photo never leaves the device.
+Everything runs in the browser. The receipt is read on your own phone by an open-source text reader (Tesseract), so the photo never leaves the device, and nothing is saved.
+
+See [CHANGELOG.md](CHANGELOG.md) for the version history.
 
 ## Putting it on GitHub Pages
 
-1. Create a new repository on GitHub (for example `split-the-check`).
-2. Upload everything in this folder to the root of the repository, keeping the folder structure. Include the empty `.nojekyll` file.
+1. Create a repository on GitHub, for example `split-the-check`. Free accounts need it to be public.
+2. Upload the contents of this folder to the root of the repository, keeping the folder structure. Upload what's inside the folder, not the folder itself.
 3. In the repository, go to **Settings → Pages**.
-4. Under **Build and deployment**, set **Source** to *Deploy from a branch*, pick `main` and `/ (root)`, and save.
+4. Under **Build and deployment**, set **Source** to *Deploy from a branch*, choose `main` and `/ (root)`, and save.
 5. After a minute or two the site is live at `https://<your-username>.github.io/<repo-name>/`.
 
-Add it to your phone's home screen from the browser's share menu so it opens like an app.
+To make it open like an app, add it to your phone's home screen from the browser menu.
+
+To update the site later, use **Add file → Upload files** and drag in the new files. Phones may show the old version for about 10 minutes while their cache expires.
 
 ## Using it
 
-1. Take or choose a photo of the receipt. Flat, well lit, and filling the frame works best. You can also skip the photo: tap **Type the items in instead**, or **Paste receipt text** to paste text copied from Google Lens or anywhere else. When typing, Enter moves from name to price to the next item.
-2. Add everyone at the table and mark who paid.
-3. Check the items against the photo and fix anything misread. If the receipt shows a subtotal, the page tells you whether the items add up to it.
-4. Tap the people who had each item. Tap several for shared plates; the price is split evenly between them. For uneven splits, tap **Uneven shares** and use the + and − buttons (Ana 3, Ben 2 means Ana pays 3/5).
-5. Confirm the tax and pick a tip. Percent tips are calculated on the pre-tax food and drink total.
-6. Screenshot the results, or tap **Copy** under someone's share (or **Copy everyone's shares**) and paste it into a text.
+1. **Receipt.** Take or choose a photo. Flat, well lit and filling the frame works best. You can also tap **Type the items in instead**, or **Paste receipt text** to paste text copied from Google Lens or anywhere else. When typing, Enter moves from name to price to the next item.
+2. **People.** Add everyone at the table and mark who paid.
+3. **Who had what.** Check the items against the photo and fix anything misread. Tap the people who had each item. Tap several for a shared plate, or **Everyone**. For uneven splits, tap **Uneven shares** and use + and − (Ana 3, Ben 2 means Ana pays 3/5).
+4. **Tax and tip.** Confirm the tax and pick a tip. Percent tips are calculated on the food and drink total before tax.
+5. **The split.** Screenshot the results, or tap **Copy** under a person's share (or **Copy everyone's shares**) and paste it into a message.
 
-### What the reader handles
+The split won't calculate while something needs attention, such as an unclaimed item or an unconfirmed price. Tap the message under "The split" to jump to the item.
 
-- **Add-ons** like "-Boiled Egg $2.00" are tucked under their dish and go to the same people. Tap **Change** to assign one separately.
-- **Long dish names** printed on two lines ("Chicken Katsu" / "Udon") are joined when both lines are clearly the same text size. Joined names are tagged, and **Split apart** undoes it. If the items come up short of the subtotal, those tags turn amber so you check them first.
-- **Quantities** ("2 Pizza", "2x Coke", "Fries x2", "2 @ 7.50") are recognized. **Split into 2** turns one line into separate rows so different people can take each.
-- **Lost prices:** a line that starts with a quantity but lost its price stays as a row with a blank price. If exactly one item is missing its price, the gap to the subtotal is filled in and marked amber. The split won't calculate until you tap **Looks right** or type the price.
-- **Lost lines:** if the items come up short of the subtotal, **Add the missing $X** creates a row with that amount for you to name.
-- **Fees and surcharges** (kitchen appreciation, health mandates, card surcharges) are split like tax, by what each person ordered.
-- **Auto-gratuity** is filled in as the tip with a warning so nobody tips twice. Tip guide tables, voided items, VAT-included lines and payment lines are ignored. A photo of the card slip instead of the itemized check gets flagged.
-- **Spelling:** the reader's i/l mix-ups ("Bolled", "Terlyaki") are fixed using a list of common menu words.
-- **Photos:** shadows and uneven light are evened out before reading. If the items don't match the subtotal, the photo is read a second time without that step and the better result is kept. Tilted photos are handled by measuring text size with the reader's tilt-corrected line heights.
+## What the reader handles
+
+- **Subtotal check.** If the receipt prints a subtotal, the page says whether the items add up to it.
+- **Add-ons** such as "-Boiled Egg $2.00" are tucked under their dish and go to the same people. Tap **Change** to assign one separately.
+- **Two-line dish names** ("Chicken Katsu" / "Udon") are joined only when both lines are clearly the same text size. Joined names are tagged, and **Split apart** undoes it. If the items come up short of the subtotal, the tags turn amber so you check them first.
+- **Quantities** ("2 Pizza", "2x Coke", "Fries x2", "2 @ 7.50") are recognized. **Split into 2** turns one line into separate rows.
+- **Lost prices.** A line that starts with a quantity but lost its price stays as a row. If exactly one item is missing its price, the gap to the subtotal is filled in and marked amber, and the split waits until you tap **Looks right** or type the price.
+- **Lost lines.** If the items come up short, **Add the missing $X** creates a row with that amount for you to name.
+- **Fees and surcharges** (kitchen appreciation, health mandates, card surcharges) are split like tax.
+- **Auto-gratuity** is filled in as the tip with a warning not to tip twice.
+- **Ignored lines:** voided items, tip guide tables, VAT-included lines, payment and change lines. A photo of the card slip instead of the itemized check is flagged.
+- **Spelling.** The reader's i/l mix-ups ("Bolled", "Terlyaki") are fixed using a list of common menu words.
+- **Difficult photos.** Shadows and uneven light are evened out before reading, and tilted photos are handled. If the items don't match the subtotal, the photo is read a second time and the better result is kept.
+
+The reader still struggles with crumpled paper, badly faded thermal ink, glare and steep angles. Every item and price can be edited, so look over the list before splitting.
 
 ## What it stores
 
 Nothing.
 
-- No database, no server, no accounts, no analytics, no cookies.
-- No `localStorage`, `sessionStorage`, or IndexedDB. The text reader's own language-file cache is switched off (`cacheMethod: 'none'`), which would otherwise save a copy in IndexedDB.
-- The photo is held in memory only while you're on the page. The file input is cleared as soon as the photo is read, the working copy of the image is discarded after reading, and the preview is released when you remove the photo, start over, or close the tab.
+- No database, server, accounts, analytics or cookies.
+- No `localStorage`, `sessionStorage` or IndexedDB. The text reader's own language-file cache is switched off (`cacheMethod: 'none'`).
+- The photo is held in memory only while the page is open. The file input is cleared as soon as the photo is read, working copies of the image are discarded after reading, and the preview is released when you remove the photo, start over or close the tab.
 - Refreshing or closing the page erases everything.
 
-GitHub's servers will log ordinary web requests (IP address, the page files your browser downloads), as any web host does. Your photo and the numbers you type are never part of those requests.
+The browser keeps the site's own files (about 7 MB, mostly the text reader) in its normal cache, like any website. No receipts, names or amounts are cached. Clearing "Cached images and files" in the browser settings removes them.
 
-## Security measures
+GitHub logs ordinary web requests (IP address and the files your browser downloads), as any web host does. Your photo and the numbers you enter are never sent.
 
-- **No third-party code at runtime.** The text reader and its language data are bundled in `vendor/`, so nothing loads from a CDN that could be compromised or track visitors.
-- **Strict Content Security Policy** (in `index.html`): scripts, styles, workers and network requests are limited to this site's own files. Images may come only from this site or from in-memory `blob:` URLs. Forms, plugins, and `<base>` tags are blocked. `'wasm-unsafe-eval'` is allowed because the text reader is WebAssembly; plain JavaScript `eval` stays blocked.
-- **No HTML injection.** Item names, people's names and everything read from the receipt are inserted as text, never as HTML, so a receipt line or a name like `<img onerror=...>` shows up as literal characters.
-- **Input limits:** 30 people, 150 items, 25 MB photos, amounts capped at $1,000,000, names and item labels length-limited.
-- **No referrer** is sent when leaving the page, and a `noindex` tag asks search engines not to list it.
-- **Copying** uses the browser's clipboard only when you tap a Copy button. Nothing is read from the clipboard.
-- **Exact money math:** all amounts are integer cents. Leftover pennies from splitting are handed out so every share adds up to the exact total.
+## Security
 
-One limitation: GitHub Pages doesn't let you set HTTP headers, so the `frame-ancestors` protection against being embedded in another site's frame isn't available. The page has no logins or actions worth hijacking, so this is a low risk.
+- **No third-party code at runtime.** The text reader and its language data are bundled in `vendor/`, so nothing loads from outside servers.
+- **Strict Content Security Policy** (in `index.html`). Scripts, styles, workers and network requests are limited to this site's own files. Images may come only from this site or from in-memory `blob:` URLs. Forms, plugins and `<base>` tags are blocked. `'wasm-unsafe-eval'` is allowed because the text reader is WebAssembly; JavaScript `eval` stays blocked.
+- **No HTML injection.** Names and everything read from a receipt are inserted as plain text, so something like `<img onerror=...>` appears as literal characters.
+- **Input limits.** 30 people, 150 items, 25 MB photos, amounts up to $1,000,000, length limits on names.
+- **Clipboard** is written only when you tap a Copy button and is never read.
+- **No referrer** is sent when leaving the page, and a `noindex` tag asks search engines not to list the site.
+- **Exact money math.** All amounts are whole cents, and leftover pennies are distributed so every share adds up to the exact total.
+
+GitHub Pages doesn't allow custom HTTP headers, so protection against the page being embedded in another site's frame (`frame-ancestors`) isn't available. The page has no logins or actions worth hijacking, so the risk is low.
 
 ## Files
 
@@ -70,13 +81,25 @@ js/words.js                 menu word list for spelling repairs
 vendor/tesseract/           Tesseract.js 7.0.0 (Apache-2.0)
 vendor/tesseract-core/      Tesseract.js-core 7.0.0 WebAssembly builds (Apache-2.0)
 vendor/lang/                English language data, 4.0.0_best_int (see NOTICE.txt)
-tests/unit.test.mjs         37 tests incl. 20 receipt formats; run with `node tests/unit.test.mjs`
+tests/unit.test.mjs         37 tests incl. 20 receipt formats: node tests/unit.test.mjs
+README.md                   this file
+CHANGELOG.md                version history
 ```
 
-## Accuracy
+## Third-party components
 
-The reader handles clean printed receipts well and struggles with crumpled paper, faded thermal ink, glare, and steep angles. Every item and price is editable, and the subtotal check flags misreads, so look over the list before splitting.
+Tesseract.js and Tesseract.js-core are licensed under Apache-2.0; their license files are in `vendor/`. The packaged English language data is MIT licensed and built from Tesseract's Apache-2.0 models (see `vendor/lang/NOTICE.txt`).
 
-## Licenses
+## License
 
-Tesseract.js and Tesseract.js-core are Apache-2.0 licensed; their license files are in `vendor/`. The packaged English language data is MIT licensed, built from Tesseract's Apache-2.0 models (see `vendor/lang/NOTICE.txt`).
+No license is granted for this project's own code. All rights reserved.
+
+---
+
+## AI disclosure and disclaimer
+
+This project was generated with AI. The code, tests and documentation were written by an AI model (Claude, by Anthropic) under the direction of the repository owner, who reviewed and tested the results. AI-generated code can contain errors that aren't obvious, even after testing.
+
+This software is provided "as is", without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose and noninfringement. In no event shall the author be liable for any claim, damages or other liability arising from the use of this software.
+
+This tool is not financial advice. Receipt reading can be wrong. Always check the items, prices and totals against the actual receipt before anyone pays.
