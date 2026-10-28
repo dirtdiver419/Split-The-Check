@@ -47,6 +47,7 @@
         </figure>
         <p id="receipt-note" class="note"></p>
         <div class="row">
+          <button id="crop-open" class="btn btn-primary" type="button">Crop and re-read</button>
           <label class="btn btn-quiet file-btn">
             <input id="photo-again" type="file" accept="image/*">
             Use a different photo
@@ -80,7 +81,7 @@
         <button id="person-add" class="btn btn-primary" type="button">Add</button>
       </div>
       <ul id="people" class="people" aria-label="People at the table"></ul>
-      <p id="people-hint" class="note">Add everyone who's splitting, including you. Mark whoever covered the bill as the payer so everyone knows who to pay back.</p>
+      <p id="people-hint" class="note">Add everyone who's splitting, including you. Mark everyone who put money on the bill. With two or more payers, you'll enter what each one paid in step 4.</p>
     </section>
 
     <section class="sheet" aria-labelledby="h-items">
@@ -105,11 +106,22 @@
       </div>
       <button id="fee-show" class="linkish fee-show" type="button">Add a fee or surcharge</button>
 
-      <fieldset class="field">
+      <div class="field" id="disc-wrap" hidden>
+        <label for="disc">Discounts</label>
+        <div class="money"><span aria-hidden="true">$</span><input id="disc" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00"></div>
+        <div class="field-note-row">
+          <p id="disc-note" class="note">Coupons and other discounts on the whole bill, spread by what each person ordered.</p>
+          <button id="disc-to-row" class="linkish" type="button">Make it a line item</button>
+        </div>
+      </div>
+      <button id="disc-show" class="linkish fee-show" type="button">Add a discount</button>
+
+      <fieldset class="field" id="tip-single">
         <legend>Tip</legend>
         <div class="seg" role="radiogroup" aria-label="Tip type">
           <label><input type="radio" name="tip-mode" value="percent" checked> Percent</label>
           <label><input type="radio" name="tip-mode" value="amount"> Amount</label>
+          <label><input type="radio" name="tip-mode" value="total"> Total</label>
         </div>
         <div id="tip-percent-wrap">
           <div class="chips" id="tip-presets">
@@ -124,13 +136,26 @@
         <div id="tip-amount-wrap" hidden>
           <div class="money"><span aria-hidden="true">$</span><input id="tip-amt" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00" aria-label="Tip amount"></div>
         </div>
+        <div id="tip-total-wrap" hidden>
+          <div class="money"><span aria-hidden="true">$</span><input id="tip-total" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00" aria-label="Total you want to pay"></div>
+          <p id="tip-total-calc" class="computed" aria-live="polite"></p>
+          <p class="note">Type the total you want to pay, tip included.</p>
+        </div>
         <p id="tip-note" class="tip-note" hidden></p>
       </fieldset>
+
+      <div id="payers" hidden>
+        <p class="payers-title">What each payer put on their card</p>
+        <div id="payer-blocks"></div>
+        <p id="cards-tip" class="tip-cards" aria-live="polite"></p>
+        <p id="cards-check" class="check"></p>
+      </div>
     </section>
 
     <section aria-labelledby="h-split" class="results">
       <h2 id="h-split" class="results-title">The split</h2>
       <p id="results-blocked" class="blocked"></p>
+      <div id="summary"></div>
       <div id="slips" class="slips"></div>
       <button id="copy-all" class="btn copy-all" type="button" hidden>Copy everyone's shares</button>
       <p id="results-foot" class="results-foot" hidden></p>
@@ -148,6 +173,34 @@
 
   <footer class="foot">
     <p>Nothing on this page is stored. Close or refresh it and everything's gone.</p>
+    <p class="disclaimer">Not financial advice. The receipt reader can make mistakes, so check the items, prices and totals against the actual receipt before anyone pays.</p>
+    <p class="version">Version 2.1.0</p>
   </footer>
+
+  <div id="undo-bar" class="undo-bar" role="status" aria-live="polite" hidden>
+    <span id="undo-text"></span>
+    <button id="undo-btn" type="button">Undo</button>
+  </div>
+
+  <div id="crop" class="crop-screen" role="dialog" aria-modal="true" aria-labelledby="crop-title" hidden>
+    <div class="crop-inner">
+      <h2 id="crop-title">Crop the receipt</h2>
+      <p class="note">Drag the corners to frame just the receipt. Only what's inside the box gets read.</p>
+      <div class="crop-stage" id="crop-stage">
+        <canvas id="crop-canvas"></canvas>
+        <div id="crop-box" class="crop-box">
+          <button type="button" class="handle h-tl" data-h="tl" aria-label="Top left corner. Use arrow keys to move."></button>
+          <button type="button" class="handle h-tr" data-h="tr" aria-label="Top right corner. Use arrow keys to move."></button>
+          <button type="button" class="handle h-bl" data-h="bl" aria-label="Bottom left corner. Use arrow keys to move."></button>
+          <button type="button" class="handle h-br" data-h="br" aria-label="Bottom right corner. Use arrow keys to move."></button>
+        </div>
+      </div>
+      <div class="crop-bar">
+        <button id="crop-rotate" class="btn btn-quiet" type="button">↻ Rotate</button>
+        <button id="crop-cancel" class="btn btn-quiet" type="button">Cancel</button>
+        <button id="crop-read" class="btn btn-brass grow" type="button">Read this part</button>
+      </div>
+    </div>
+  </div>
 </body>
 </html>

@@ -5,6 +5,40 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-10-27
+
+### Added
+
+- More than one payer: mark two or more people as payers and each one enters what they paid plus the tip they added (percent with the usual presets, a dollar amount, or just their card total). Tips are added together and spread by what each person ordered.
+- Who pays whom: the results list the payments that settle everyone up, and each slip says who to pay ("Pays Ana $11.89 and Ben $13.67") or what's coming back.
+- Payments that don't cover the bill before tip, or cards that don't cover the bill, are flagged with the amount missing.
+- Tip by total: a third tip option where you type the total you want to pay and the tip is worked out from it.
+- Totals card at the top of the results, with everyone's total, the bill and the payments, plus **Copy totals**.
+- Crop and rotate: **Crop and re-read** opens the photo with a draggable crop box and a rotate button, and reads only the cropped part.
+- **+ Add an add-on** under each dish, **Make it an add-on of …** to tuck a row under the dish above, and **Make it its own item** to turn an add-on back into a row.
+- Discounts field in the tax and tip section, spread by what each person ordered. Discount rows get **Spread over the whole bill**, and the field gets **Make it a line item**. **Add a discount** enters one by hand.
+- Undo for a few seconds after removing an item, add-on or person.
+- A note at the bottom of the page that it isn't financial advice and totals should be checked against the receipt.
+- Version number shown at the bottom of the page.
+
+### Changed
+
+- Add-ons always follow their dish's people. They no longer have their own person buttons; use **Make it its own item** for an add-on that belongs to someone else.
+- Discounts are recognized only by a negative amount. One printed right under a dish attaches to it; any other comes in as a row for you to assign or spread.
+- Tax and fees are split by what each person owes after discounts; the tip by what they ordered before discounts. Percent tips are calculated on the food total before discounts.
+- A plain tip printed on a receipt is only used when the receipt's total shows it was charged. Gratuity and service charges still always count.
+- A leading number stays in a dish name unless the receipt prints a quantity column, and the row offers **Split into N?**. The split link now sits next to the price instead of on its own line.
+- Reading a new photo, or re-reading a crop, asks first if people are already assigned.
+
+### Fixed
+
+- Dish names with words like "Happy Hour", "Off" or "Comp" were turned into discounts.
+- Dish names starting with a number ("7 Layer Dip") lost the number.
+- Dishes starting with a percent ("2% Milk", "100% Agave Margarita") were dropped as tip-guide lines.
+- Scanning a new receipt kept the previous receipt's tip.
+- A message about an unnamed item started with a lowercase letter.
+- Discounts printed below the subtotal no longer throw off the subtotal check.
+
 ## [2.0.0] - 2026-10-26
 
 A major update to how receipts are read and how items are assigned. The item list layout changed, so this is a new major version.

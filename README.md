@@ -10,25 +10,42 @@ See [CHANGELOG.md](CHANGELOG.md) for the version history.
 
 ## Using it
 
-1. **Receipt.** Take or choose a photo. Flat, well lit and filling the frame works best. You can also tap **Type the items in instead**, or **Paste receipt text** to paste text copied from Google Lens or anywhere else. When typing, Enter moves from name to price to the next item.
-2. **People.** Add everyone at the table and mark who paid.
+1. **Receipt.** Take or choose a photo. Flat, well lit and filling the frame works best. If it doesn't read well, tap **Crop and re-read** to frame just the receipt (and **Rotate** a sideways photo). You can also tap **Type the items in instead**, or **Paste receipt text** to paste text copied from Google Lens or anywhere else. When typing, Enter moves from name to price to the next item.
+2. **People.** Add everyone at the table and mark everyone who paid.
 3. **Who had what.** Check the items against the photo and fix anything misread. Tap the people who had each item. Tap several for a shared plate, or **Everyone**. For uneven splits, tap **Uneven shares** and use + and − (Ana 3, Ben 2 means Ana pays 3/5).
-4. **Tax and tip.** Confirm the tax and pick a tip. Percent tips are calculated on the food and drink total before tax.
-5. **The split.** Screenshot the results, or tap **Copy** under a person's share (or **Copy everyone's shares**) and paste it into a message.
+4. **Tax and tip.** Confirm the tax and choose the tip by percent, by amount, or by **Total** (type what you want to pay and the tip is whatever gets you there). With two or more payers, each one enters what they paid and the tip they added on the card machine, or just their card total.
+5. **The split.** Screenshot the totals card or the individual shares, or tap **Copy** to paste them into a message.
 
-The split won't calculate while something needs attention, such as an unclaimed item or an unconfirmed price. Tap the message under "The split" to jump to the item.
+The split won't calculate while something needs attention, such as an unclaimed item, an unconfirmed price, or payments that don't cover the bill. Tap the message under "The split" to jump to the item.
+
+### Add-ons
+
+Add-ons ("+ Boiled Egg") sit under their dish and always go to the same people as the dish. **+ Add an add-on** adds one by hand. **Make it an add-on of …** tucks a row under the dish above it, and **Make it its own item** turns an add-on back into a row you can assign separately.
+
+### Discounts
+
+A negative amount printed right under a dish attaches to that dish. Any other discount comes in as its own row: tap who it was for, or tap **Spread over the whole bill** to move it to the Discounts field, where it's spread by what each person ordered. **Add a discount** enters one by hand. Tax is split by what each person owes after discounts, and the tip by what they ordered before discounts.
+
+### More than one payer
+
+Mark two or more people as payers and each one gets a box for what they paid plus the tip they added (percent, amount, or just the card total). The tips are added together and spread by what each person ordered. The results show who pays whom, using as few payments as the numbers allow.
+
+### Undo
+
+Removing an item, add-on or person shows **Undo** for a few seconds.
 
 ## What the reader handles
 
 - **Subtotal check.** If the receipt prints a subtotal, the page says whether the items add up to it.
-- **Add-ons** such as "-Boiled Egg $2.00" are tucked under their dish and go to the same people. Tap **Change** to assign one separately.
+- **Add-ons** such as "-Boiled Egg $2.00" are tucked under their dish.
 - **Two-line dish names** ("Chicken Katsu" / "Udon") are joined only when both lines are clearly the same text size. Joined names are tagged, and **Split apart** undoes it. If the items come up short of the subtotal, the tags turn amber so you check them first.
-- **Quantities** ("2 Pizza", "2x Coke", "Fries x2", "2 @ 7.50") are recognized. **Split into 2** turns one line into separate rows.
+- **Quantities** ("2x Coke", "Fries x2", "2 @ 7.50", or a quantity column like "1 Chicken Udon") are recognized. **Split into 2** turns one line into separate rows. On receipts without a quantity column, a dish name that starts with a number ("7 Layer Dip") keeps it, with a **Split into 7?** link in case it really was seven.
+- **Discounts** are recognized only by a negative amount, so a dish called "Happy Hour Wings" stays a dish.
 - **Lost prices.** A line that starts with a quantity but lost its price stays as a row. If exactly one item is missing its price, the gap to the subtotal is filled in and marked amber, and the split waits until you tap **Looks right** or type the price.
 - **Lost lines.** If the items come up short, **Add the missing $X** creates a row with that amount for you to name.
 - **Fees and surcharges** (kitchen appreciation, health mandates, card surcharges) are split like tax.
-- **Auto-gratuity** is filled in as the tip with a warning not to tip twice.
-- **Ignored lines:** voided items, tip guide tables, VAT-included lines, payment and change lines. A photo of the card slip instead of the itemized check is flagged.
+- **Auto-gratuity** and service charges are filled in as the tip with a warning not to tip twice. A plain printed tip is only used if the receipt's total shows it was actually charged.
+- **Ignored lines:** voided items, tip guide tables ("18% … 20% …"), VAT-included lines, payment and change lines. Dishes with a percent in the name ("100% Agave Margarita") are kept. A photo of the card slip instead of the itemized check is flagged.
 - **Spelling.** The reader's i/l mix-ups ("Bolled", "Terlyaki") are fixed using a list of common menu words.
 - **Difficult photos.** Shadows and uneven light are evened out before reading, and tilted photos are handled. If the items don't match the subtotal, the photo is read a second time and the better result is kept.
 
@@ -40,7 +57,7 @@ Nothing.
 
 - No database, server, accounts, analytics or cookies.
 - No `localStorage`, `sessionStorage` or IndexedDB. The text reader's own language-file cache is switched off (`cacheMethod: 'none'`).
-- The photo is held in memory only while the page is open. The file input is cleared as soon as the photo is read, working copies of the image are discarded after reading, and the preview is released when you remove the photo, start over or close the tab.
+- The photo is held in memory only while the page is open, so it can be shown and cropped. Working copies of the image are discarded after reading, and the photo is released when you remove it, start over or close the tab.
 - Refreshing or closing the page erases everything.
 
 The browser keeps the site's own files (about 7 MB, mostly the text reader) in its normal cache, like any website. No receipts, names or amounts are cached. Clearing "Cached images and files" in the browser settings removes them.
@@ -71,7 +88,7 @@ js/words.js                 menu word list for spelling repairs
 vendor/tesseract/           Tesseract.js 7.0.0 (Apache-2.0)
 vendor/tesseract-core/      Tesseract.js-core 7.0.0 WebAssembly builds (Apache-2.0)
 vendor/lang/                English language data, 4.0.0_best_int (see NOTICE.txt)
-tests/unit.test.mjs         37 tests incl. 20 receipt formats: node tests/unit.test.mjs
+tests/unit.test.mjs         45 tests incl. 25 receipt formats: node tests/unit.test.mjs
 README.md                   this file
 CHANGELOG.md                version history
 ```
