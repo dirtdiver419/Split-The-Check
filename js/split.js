@@ -114,21 +114,29 @@ export function allocateShares(amount, weights, offset = 0) {
  *
  * people: [{ id, name }]
  * items:  [{ name, cents, addon?, assigned: Map<personId, shares> }]
+ *         (negative cents = a discount on one item, assigned like any item)
  * taxCents, tipCents, feeCents: integers (cents)
+ * discountCents: whole-bill discount as a positive number (a $10 coupon is 1000)
  *
  * Each item is divided by shares (Ana 3, Ben 2 -> 3/5 and 2/5).
- * Tax, tip and fees are spread across people in proportion to their food subtotal.
+ * - Whole-bill discounts are spread by what each person ordered (before discounts).
+ * - Tax and fees are spread by what each person owes for food after discounts,
+ *   because restaurants charge tax on the discounted price.
+ * - Tip is spread by what each person ordered before discounts, since the
+ *   service was the same either way.
  */
-export function computeSplit({ people, items, taxCents, tipCents, feeCents = 0 }) {
+export function computeSplit({ people, items, taxCents, tipCents, feeCents = 0, discountCents = 0 }) {
   const byId = new Map(
-    people.map((p) => [p.id, { id: p.id, name: p.name, lines: [], subtotal: 0, tax: 0, tip: 0, fee: 0, total: 0 }])
+    people.map((p) => [p.id, { id: p.id, name: p.name, lines: [], subtotal: 0, ordered: 0, discount: 0, tax: 0, tip: 0, fee: 0, total: 0 }])
   );
 
   let itemsTotal = 0;
+  let orderedTotal = 0;
   const unassigned = [];
 
   items.forEach((item, index) => {
     itemsTotal += item.cents;
+    if (item.cents > 0) orderedTotal += item.cents;
     const who = people.filter((p) => (item.assigned.get(p.id) || 0) > 0);
     if (who.length === 0) {
       unassigned.push(item);
@@ -150,28 +158,56 @@ export function computeSplit({ people, items, taxCents, tipCents, feeCents = 0 }
         even,
       });
       row.subtotal += parts[k];
+      if (parts[k] > 0) row.ordered += parts[k];
     });
   });
 
   const rows = [...byId.values()];
-  const weights = rows.map((r) => r.subtotal);
-  const taxParts = allocateProportional(taxCents, weights);
-  const tipParts = allocateProportional(tipCents, weights);
-  const feeParts = allocateProportional(feeCents, weights);
+  const ordered = rows.map((r) => r.ordered);
+  const discParts = allocateProportional(-discountCents, ordered);
+  rows.forEach((r, i) => { r.discount = discParts[i]; });
+  const afterDiscounts = rows.map((r) => r.subtotal + r.discount);
+  const taxParts = allocateProportional(taxCents, afterDiscounts);
+  const feeParts = allocateProportional(feeCents, afterDiscounts);
+  const tipParts = allocateProportional(tipCents, ordered);
   rows.forEach((r, i) => {
     r.tax = taxParts[i];
-    r.tip = tipParts[i];
     r.fee = feeParts[i];
-    r.total = r.subtotal + r.tax + r.tip + r.fee;
+    r.tip = tipParts[i];
+    r.total = r.subtotal + r.discount + r.tax + r.fee + r.tip;
   });
 
   return {
     rows,
     itemsTotal,
+    orderedTotal,
     taxCents,
     tipCents,
     feeCents,
-    grandTotal: itemsTotal + taxCents + tipCents + feeCents,
+    discountCents,
+    grandTotal: itemsTotal - discountCents + taxCents + tipCents + feeCents,
     unassigned,
   };
+}
+
+/**
+ * Who pays whom. balances: [{ id, cents }] where positive = is owed money,
+ * negative = owes money. The biggest debt goes to the biggest refund until
+ * everyone is square. Returns [{ from, to, cents }].
+ */
+export function settleUp(balances) {
+  const owed = balances.filter((b) => b.cents > 0).map((b) => ({ ...b })).sort((a, b) => b.cents - a.cents);
+  const owes = balances.filter((b) => b.cents < 0).map((b) => ({ id: b.id, cents: -b.cents })).sort((a, b) => b.cents - a.cents);
+  const out = [];
+  let i = 0;
+  let j = 0;
+  while (i < owes.length && j < owed.length) {
+    const cents = Math.min(owes[i].cents, owed[j].cents);
+    if (cents > 0) out.push({ from: owes[i].id, to: owed[j].id, cents });
+    owes[i].cents -= cents;
+    owed[j].cents -= cents;
+    if (owes[i].cents === 0) i++;
+    if (owed[j].cents === 0) j++;
+  }
+  return out;
 }

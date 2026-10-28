@@ -24,10 +24,10 @@ const RE = {
   tip: /\btip\b|\bgratuity\b|\bservice\s+charge\b|\bauto[\s-]?grat/,
   fee:
     /\bfees?\b|\bsurcharge\b|\bmandate\b|\bkitchen\s+(appreciation|staff|team)\b|\bwellness\b|\bliving\s+wage\b|\bemployee\s+benefits?\b|\bhealth(care)?\s+(charge|surcharge|mandate|ordinance)\b|\bsf\s*(hm|hcso)\b|\bcrv\b|\bbottle\s+deposit\b|\bconvenience\b|\bprocessing\b/,
-  discount: /\bdiscount\b|\bcoupon\b|\bpromo\b|\bcomp(ed)?\b|\bhappy\s+hour\b|\boff\b|\bloyalty\b|\breward\b/,
+  // Words that tie a negative amount to the whole bill rather than the dish above it.
+  billDiscount: /\bcoupon\b|\border\b|\bcheck\b|\bbill\b|\bloyalty\b|\breward|\bmember|\bemployee\b|\bvoucher\b|\bgift\b|%/,
   void: /\bvoid(ed)?\b|\bcancel(l?ed)?\b|\bdeleted\b|\brefund(ed)?\b/,
   vatIncluded: /\bincl(\.|uded|udes)?\b.*\b(vat|tax|gst|mwst|tva|iva)\b|\b(vat|tax|gst)\b.*\bincl/,
-  tipGuide: /\bsuggest|\b(tip|gratuity)\s+guide\b/,
   skip:
     /\bchange\b|\bcash\b|\btender(ed)?\b|\bvisa\b|\bmaster\s*card\b|\bamex\b|\bdiscover\b|\bcard\b|\bdebit\b|\bcredit\b|\bpayment\b|\bpaid\b|\bauth\b|\bapproval\b|\brounding\b|\bcheck\s*#|\border\s*#/,
   cardSlip: /\bvisa\b|\bmaster\s*card\b|\bamex\b|\bdiscover\b|\bauth\b|\bapproval\b|\bsignature\b|\bcontactless\b|\bchip\b/,
@@ -35,7 +35,8 @@ const RE = {
 
 const ADDON_SYMBOL = /^[-+*>~•·]\s*(?=\p{L})/u;
 const ADDON_WORD = /^(?:(?:add|added|extra|xtra|sub|substitute|with|side\s+of|no)\b|w\/)/i;
-const QTY_PREFIX = /^(\d{1,2})\s*[xX×]?\s+(?=[\p{L}\-+*>~(])/u;
+const QTY_PREFIX = /^(\d{1,2})\s*([xX×])?\s+(?=[\p{L}\-+*>~(]|\d{1,2}\s+\p{L})/u; // also "1 7 Layer Dip"
+const PLAIN_QTY_LINE = /^\d{1,2}\s+\p{L}/u;
 const QTY_SUFFIX = /\s+[xX×]\s?(\d{1,2})$/;
 const UNIT_PRICE = /\s*(?:(\d{1,2})\s*)?(?:@|[xX×]\s*\$)\s*\$?\d{1,4}[.,]\d{2}\s*(?:ea\.?|each)?$/i;
 
@@ -115,8 +116,13 @@ function splitPrice(line) {
   return { label: line, cents: null };
 }
 
-/** Pull quantity and unit-price clutter off a label. */
-function takeQuantity(label) {
+/**
+ * Pull quantity and unit-price clutter off a label.
+ * A plain leading number ("7 Layer Dip") is only treated as a quantity when the
+ * receipt prints quantities on its lines; otherwise it stays in the name and the
+ * row offers "Split into 7?" instead (qtyGuess).
+ */
+function takeQuantity(label, printsQty = false) {
   let qty = 1;
   let s = label;
   const unit = s.match(UNIT_PRICE);
@@ -127,20 +133,44 @@ function takeQuantity(label) {
   const misread = s.match(/^(?:[lI|]|il|li|1l|l1)\s+(?=\p{Lu})/u); // the reader's take on a "1"
   if (misread) {
     s = s.slice(misread[0].length);
-    return { qty: 1, rest: s.trim(), hadQty: true };
+    return { qty: 1, qtyGuess: false, rest: s.trim(), hadQty: true };
   }
+  let qtyGuess = false;
   const pre = s.match(QTY_PREFIX);
   if (pre) {
     qty = Number(pre[1]);
-    s = s.slice(pre[0].length);
+    const symbolNext = /^[-+*>~•·]/.test(s.slice(pre[0].length)); // "2 -Boiled Egg"
+    if (pre[2] || qty === 1 || printsQty || unit || symbolNext) s = s.slice(pre[0].length); // clearly a quantity
+    else qtyGuess = true; // keep "7 Layer Dip" whole
   }
   const suf = s.match(QTY_SUFFIX);
   if (suf) {
     qty = Number(suf[1]);
     s = s.slice(0, suf.index);
   }
-  if (!(qty >= 1 && qty <= 20)) qty = 1;
-  return { qty, rest: s.trim(), hadQty: Boolean(pre || suf || (unit && unit[1])) };
+  if (suf) qtyGuess = false;
+  if (!(qty >= 1 && qty <= 20)) { qty = 1; qtyGuess = false; }
+  return { qty, qtyGuess: qtyGuess && qty > 1, rest: s.trim(), hadQty: Boolean(pre || suf || (unit && unit[1])) };
+}
+
+/*
+ * Tip-guide lines ("18%  19.43", "Suggested gratuity 20%", "18% Tip $3.92 Total $23.92")
+ * versus real lines that happen to contain a percent ("2% Milk", "Sales Tax 8.875%",
+ * "Gratuity 18% (6+)"). Lines that mention a tip go through the tip rules instead.
+ */
+const GUIDE_WORDS = new Set(['tip', 'tips', 'gratuity', 'grat', 'suggested', 'suggestion', 'suggestions', 'guide', 'total', 'totals', 'amount', 'of', 'is', 'would', 'be', 'for', 'on', 'service', 'the', 'pre', 'tax', 'pretax', 'with', 'w', 'your', 'a']);
+const FILLER = new Set(['would', 'be', 'is', 'of', 'on', 'for', 'the', 'with', 'w', 'pre', 'pretax', 'amount', 'your', 'a', 'equals']);
+export function isTipGuide(label) {
+  if (!/\d\s?%/.test(label)) return false;
+  const rest = label
+    .replace(/pre-?\s?tax|before\s+tax/gi, ' ')
+    .replace(/\(?\d{1,2}(\.\d{1,3})?\s?%\)?/g, ' ')
+    .replace(/\(?-?\$?\s?\d{1,6}([.,]\d{2})?\)?/g, ' ')
+    .toLowerCase()
+    .match(/\p{L}+/gu) || [];
+  if (rest.every((w) => FILLER.has(w))) return true;
+  if (rest.includes('suggested') || rest.includes('guide') || rest.includes('total')) return rest.every((w) => GUIDE_WORDS.has(w));
+  return false;
 }
 
 const ratio = (a, b) => (a && b ? a / b : null);
@@ -160,7 +190,7 @@ function pageTilt(lines) {
 /**
  * Parse receipt lines.
  * Returns {
- *   items: [{ name, cents (int|null), qty, addon, parent (index|null), joined ({ base, extra }|null) }],
+ *   items: [{ name, cents (int|null), qty, qtyGuess, addon, parent (index|null), joined ({ base, extra }|null), discount }],
  *   taxCents, tipCents, feeCents, subtotalCents, totalCents, gratuity, cardSlip
  * } with any figure null when the receipt didn't show it.
  */
@@ -178,9 +208,28 @@ export function parseLines(input) {
   let prevWasLastItem = false; // was the line just before this one that item?
   let tipLines = 0;
   let paymentWords = false;
-  const tilt = Math.abs(pageTilt(input)) > TILT;
+  let inDishBlock = false; // the last priced line belonged to a dish (the dish or one of its add-ons)
+  let footerDiscounts = 0;
+  const lines = input.slice(0, 400);
+  const tilt = Math.abs(pageTilt(lines)) > TILT;
 
-  for (const raw of input.slice(0, 400)) {
+  // Does this receipt print a quantity on its lines? ("1 Chicken Udon", "2 Pizza"...)
+  let plain = 0;
+  let priced = 0;
+  for (const raw of lines) {
+    const { label, cents } = splitPrice(String(raw.text ?? '').replace(/\s+/g, ' ').trim());
+    if (cents === null || cents <= 0) continue;
+    const k = label.toLowerCase();
+    if (RE.subtotal.test(k) || RE.tax.test(k) || RE.tip.test(k) || RE.fee.test(k) || RE.total.test(k) || RE.skip.test(k)) continue;
+    if (ADDON_SYMBOL.test(label) || ADDON_WORD.test(label)) continue;
+    priced++;
+    if (PLAIN_QTY_LINE.test(label) || /^\d{1,2}\s*[xX×]\s/.test(label) || QTY_SUFFIX.test(label)) plain++;
+  }
+  // Most dish lines start with a number -> that number is a quantity column.
+  const printsQty = plain >= 2 && plain * 4 >= priced * 3;
+  const push = (o) => out.items.push({ qty: 1, qtyGuess: false, addon: false, parent: null, joined: null, discount: false, afterSubtotal: false, ...o });
+
+  for (const raw of lines) {
     const line = fixSpelling(String(raw.text ?? '').replace(/\s+/g, ' ').replace(/^\|+\s*/, '').trim());
     const wasAfterItem = prevWasLastItem;
     prevWasLastItem = false;
@@ -192,18 +241,18 @@ export function parseLines(input) {
 
     // Things that are never items, priced or not.
     if (RE.void.test(key) || RE.vatIncluded.test(key)) continue;
-    if (RE.tipGuide.test(key) || /^\$?\d{1,2}(\.\d{1,2})?\s?%/.test(rawLabel)) continue;
+    if (/\bsuggest/.test(key) || isTipGuide(rawLabel)) continue;
 
     if (cents !== null) {
       if (RE.subtotal.test(key)) { out.subtotalCents = cents; footer = true; continue; }
-      if (RE.tax.test(key)) { out.taxCents = (out.taxCents ?? 0) + cents; continue; }
+      if (RE.tax.test(key)) { out.taxCents = (out.taxCents ?? 0) + cents; inDishBlock = false; continue; }
       if (RE.tip.test(key)) {
         out.tipCents = (out.tipCents ?? 0) + cents;
         tipLines += 1;
         if (/gratuity|service|auto/.test(key)) out.gratuity = true;
         continue;
       }
-      if (RE.fee.test(key)) { out.feeCents = (out.feeCents ?? 0) + cents; continue; }
+      if (RE.fee.test(key)) { out.feeCents = (out.feeCents ?? 0) + cents; inDishBlock = false; continue; }
       if (RE.total.test(key)) {
         if (out.totalCents === null || cents > out.totalCents) out.totalCents = cents;
         footer = true;
@@ -212,7 +261,7 @@ export function parseLines(input) {
       if (RE.skip.test(key)) continue;
     }
 
-    const { qty, rest, hadQty } = takeQuantity(rawLabel);
+    const { qty, qtyGuess, rest, hadQty } = takeQuantity(rawLabel, printsQty);
     const symbol = ADDON_SYMBOL.test(rest);
     const name = cleanName(rest.replace(ADDON_SYMBOL, ''));
     if (!/\p{L}{2,}/u.test(name)) continue;
@@ -224,25 +273,31 @@ export function parseLines(input) {
     const sameSize = within(xhR, XH_SAME) && (tilt || within(capR, CAP_SAME));
 
     if (cents !== null) {
-      if (footer) {
-        // A discount printed after the subtotal still counts. Anything else down here isn't food.
-        if (RE.discount.test(key)) out.items.push({ name, cents: -Math.abs(cents), qty: 1, addon: false, parent: null, joined: null });
+      // Discounts are recognized by a negative amount only. A dish called "Happy Hour Wings" stays a dish.
+      if (cents < 0) {
+        const forBill = footer || RE.billDiscount.test(key);
+        if (!forBill && inDishBlock && lastItem !== -1) {
+          push({ name, cents, addon: true, parent: lastItem }); // printed right under its dish
+        } else {
+          push({ name, cents, discount: true, afterSubtotal: footer }); // you decide: who it was for, or the whole bill
+          if (footer) footerDiscounts += cents;
+          inDishBlock = false;
+        }
         continue;
       }
-      if (RE.discount.test(key) && !symbol) {
-        out.items.push({ name, cents: -Math.abs(cents), qty: 1, addon: false, parent: null, joined: null });
-        continue;
-      }
+      if (footer) continue; // anything else priced below the subtotal isn't food
 
       const isAddon = lastItem !== -1 && (symbol || ADDON_WORD.test(rest) || clearlySmaller);
       if (isAddon) {
         if (cents === 0) continue; // a free modifier is a cooking note, not a charge
-        out.items.push({ name, cents, qty, addon: true, parent: lastItem, joined: null });
+        push({ name, cents, qty, addon: true, parent: lastItem });
+        inDishBlock = true;
         continue;
       }
 
       itemsStarted = true;
-      out.items.push({ name, cents, qty, addon: false, parent: null, joined: null });
+      push({ name, cents, qty, qtyGuess });
+      inDishBlock = true;
       lastItem = out.items.length - 1;
       lastItemLine = raw;
       prevWasLastItem = true;
@@ -256,7 +311,8 @@ export function parseLines(input) {
     // A quantity up front means a new item whose price the reader lost.
     // If sizes are known it has to be dish-sized; a smaller "8 Pcs California Roll" is a description.
     if (hadQty && (xhR === null || xhR >= XH_SAME[0]) && !clearlySmaller) {
-      out.items.push({ name, cents: null, qty, addon: false, parent: null, joined: null });
+      push({ name, cents: null, qty, qtyGuess });
+      inDishBlock = true;
       lastItem = out.items.length - 1;
       lastItemLine = raw;
       prevWasLastItem = true;
@@ -276,6 +332,15 @@ export function parseLines(input) {
 
   // Two or more tip lines are a tip guide ("18% ... 20% ..."), not a tip anyone added.
   if (tipLines >= 2 && !out.gratuity) out.tipCents = null;
+  // Restaurants rarely print a real tip. A plain "Tip" line only counts if the printed
+  // total proves it was charged; gratuity and service charges always count.
+  if (out.tipCents !== null && !out.gratuity) {
+    const food = out.subtotalCents !== null
+      ? out.subtotalCents + footerDiscounts
+      : out.items.reduce((s, i) => s + (i.cents ?? 0), 0);
+    const charged = food + (out.taxCents ?? 0) + (out.feeCents ?? 0) + out.tipCents;
+    if (out.totalCents === null || out.totalCents !== charged) out.tipCents = null;
+  }
   if (out.items.length === 0 && paymentWords && (out.totalCents !== null || out.tipCents !== null)) out.cardSlip = true;
 
   return out;

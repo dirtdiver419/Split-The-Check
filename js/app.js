@@ -1,17 +1,24 @@
-import { parseMoney, parsePercent, formatMoney, centsToInput, computeSplit, splitEven } from './split.js';
+import { parseMoney, parsePercent, formatMoney, centsToInput, computeSplit, splitEven, settleUp } from './split.js';
 import { bestParse, pairColumns, textFromWords, wordsFromBlocks, linesFromBlocks, scoreParse } from './parse.js';
 
 // Everything lives in this object, in memory only. No localStorage, no cookies,
 // no IndexedDB, no network writes. Refreshing the page wipes it.
 const state = {
   people: [], // { id, name }
-  payerId: null,
+  payerIds: new Set(),
+  pay: new Map(), // personId -> { paid, mode: 'percent'|'amount'|'total', pct, amt, total } (raw text)
   items: [], // see makeItem()
   tipMode: 'percent',
   receipt: { subtotalCents: null, totalCents: null },
   gratuityFromReceipt: false,
+  discNames: [], // names of discounts moved into the Discounts field
+  photo: null, // the picked File, kept in memory only so it can be cropped
   previewUrl: null,
+  rotation: 0,
+  crop: null, // { x, y, w, h } as fractions of the rotated photo
   scanToken: 0,
+  undo: null,
+  undoTimer: 0,
 };
 
 const LIMITS = { people: 30, items: 150, nameLen: 30, itemLen: 60, fileBytes: 25 * 1024 * 1024, pasteChars: 20000, maxShares: 9 };
@@ -21,6 +28,9 @@ const newId = () => `id${++idCounter}`;
 
 const $ = (id) => document.getElementById(id);
 const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
+const listAnd = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`);
+const personName = (id) => state.people.find((p) => p.id === id)?.name ?? '';
 
 /** Build a DOM node. Strings become text nodes, never HTML. */
 function el(tag, attrs = {}, ...children) {
@@ -44,17 +54,19 @@ const cleanText = (s, max) => String(s).replace(/[\u0000-\u001f\u007f]/g, '').re
  * item = {
  *   id, name, cents (int | null), rawPrice,
  *   assigned: Map<personId, shares>, uneven,
- *   addon, parentId, custom (add-on assigned separately from its dish), open (add-on editor shown),
- *   joined: { base, extra } | null, qty,
+ *   addon, parentId, open (add-on editor shown),
+ *   joined: { base, extra } | null, qty, qtyGuess,
  *   guess: null | 'guessed' | 'added'   (price came from the subtotal, not confirmed yet)
+ *   afterSubtotal (a discount printed below the subtotal; not part of the subtotal check)
  * }
+ * Add-ons always follow their dish's people. They never have people of their own.
  */
-function makeItem({ name = '', cents = null, qty = 1, addon = false, parentId = null, joined = null } = {}) {
+function makeItem({ name = '', cents = null, qty = 1, qtyGuess = false, addon = false, parentId = null, joined = null, afterSubtotal = false } = {}) {
   return {
     id: newId(), name: cleanText(name, LIMITS.itemLen), cents, rawPrice: '',
     assigned: new Map(), uneven: false,
-    addon, parentId, custom: false, open: false,
-    joined, qty, guess: null,
+    addon, parentId, open: false,
+    joined, qty, qtyGuess, guess: null, afterSubtotal,
   };
 }
 
@@ -67,13 +79,10 @@ const topItems = () => state.items.filter(isTop);
 const isBlank = (item) => isTop(item) && !item.name && item.cents === null && !item.rawPrice;
 const realItems = () => state.items.filter((i) => !isBlank(i));
 
-/** Add-ons follow their dish's people unless someone reassigned them. */
 function syncAddons(parent) {
   for (const a of addonsOf(parent)) {
-    if (!a.custom) {
-      a.assigned = new Map(parent.assigned);
-      a.uneven = parent.uneven;
-    }
+    a.assigned = new Map(parent.assigned);
+    a.uneven = parent.uneven;
   }
 }
 
@@ -84,10 +93,68 @@ function setShares(item, pid, n) {
     item.uneven = false;
     for (const k of item.assigned.keys()) item.assigned.set(k, 1);
   }
-  if (!item.addon) syncAddons(item);
+  syncAddons(item);
+}
+
+/** Index just past a dish and all of its add-ons in state.items. */
+function blockEnd(parent) {
+  let end = state.items.indexOf(parent);
+  state.items.forEach((i, idx) => { if (i.addon && i.parentId === parent.id && idx > end) end = idx; });
+  return end + 1;
+}
+
+function moveAfter(rows, parent) {
+  state.items = state.items.filter((i) => !rows.includes(i));
+  state.items.splice(blockEnd(parent), 0, ...rows);
+}
+
+/* -------------------------------------------------------------------- undo */
+
+function cloneItem(i) {
+  return { ...i, assigned: new Map(i.assigned), joined: i.joined ? { ...i.joined } : null };
+}
+
+function snapshot() {
+  return {
+    people: state.people.map((p) => ({ ...p })),
+    payerIds: new Set(state.payerIds),
+    pay: new Map([...state.pay].map(([k, v]) => [k, { ...v }])),
+    items: state.items.map(cloneItem),
+  };
+}
+
+function remember(label) {
+  state.undo = snapshot();
+  $('undo-text').textContent = `Removed ${label}`;
+  $('undo-bar').hidden = false;
+  clearTimeout(state.undoTimer);
+  state.undoTimer = setTimeout(hideUndo, 5000);
+}
+
+function hideUndo() {
+  clearTimeout(state.undoTimer);
+  state.undo = null;
+  $('undo-bar').hidden = true;
+  $('undo-text').textContent = '';
+}
+
+function undo() {
+  const snap = state.undo;
+  if (!snap) return;
+  state.people = snap.people;
+  state.payerIds = snap.payerIds;
+  state.pay = snap.pay;
+  state.items = snap.items;
+  hideUndo();
+  renderAll();
 }
 
 /* ------------------------------------------------------------------ people */
+
+function payEntry(pid) {
+  if (!state.pay.has(pid)) state.pay.set(pid, { paid: '', mode: 'percent', pct: '20', amt: '', total: '' });
+  return state.pay.get(pid);
+}
 
 function addPerson() {
   const input = $('person-name');
@@ -104,43 +171,42 @@ function addPerson() {
 
   const person = { id: newId(), name };
   state.people.push(person);
-  if (state.people.length === 1) state.payerId = person.id;
+  if (state.people.length === 1) state.payerIds.add(person.id);
   input.value = '';
   input.focus();
-  renderPeople();
-  renderItems();
-  renderResults();
+  renderAll();
 }
 
 function removePerson(id) {
+  remember(personName(id));
   state.people = state.people.filter((p) => p.id !== id);
-  state.items.forEach((item) => setShares(item, id, 0));
-  if (state.payerId === id) state.payerId = null;
+  state.payerIds.delete(id);
+  state.pay.delete(id);
+  topItems().forEach((item) => setShares(item, id, 0));
+  renderAll();
+}
+
+function togglePayer(id) {
+  if (state.payerIds.has(id)) state.payerIds.delete(id);
+  else { state.payerIds.add(id); payEntry(id); }
   renderPeople();
-  renderItems();
+  renderPayers();
   renderResults();
 }
 
 function renderPeople() {
   $('people').replaceChildren(
-    ...state.people.map((p) =>
-      el('li', { class: 'person' },
+    ...state.people.map((p) => {
+      const paid = state.payerIds.has(p.id);
+      return el('li', { class: 'person' },
         el('span', { class: 'person-name', text: p.name }),
         el('button', {
-          type: 'button',
-          class: 'payer-btn',
-          'aria-pressed': String(state.payerId === p.id),
-          'aria-label': `${p.name} paid the bill`,
-          text: state.payerId === p.id ? 'Paid' : 'Mark as payer',
-          onclick: () => {
-            state.payerId = state.payerId === p.id ? null : p.id;
-            renderPeople();
-            renderResults();
-          },
+          type: 'button', class: 'payer-btn', 'aria-pressed': String(paid), 'aria-label': `${p.name} paid`,
+          text: paid ? 'Paid' : 'Mark as payer', onclick: () => togglePayer(p.id),
         }),
         el('button', { type: 'button', class: 'x-btn', 'aria-label': `Remove ${p.name}`, text: '×', onclick: () => removePerson(p.id) })
-      )
-    )
+      );
+    })
   );
   $('person-add').disabled = state.people.length >= LIMITS.people;
 }
@@ -167,14 +233,57 @@ function addItem(name = '', cents = null) {
   return item;
 }
 
-function removeItem(id) {
+const itemLabel = (i) => i.name || (i.cents === null ? 'an unnamed item' : `the ${formatMoney(i.cents)} item`);
+
+function removeItem(id, { silent = false } = {}) {
   const item = byId(id);
   if (!item) return;
+  if (!silent) remember(item.name || (item.addon ? 'an add-on' : 'an item'));
   // Add-ons of a removed dish stay on the bill as their own rows.
-  for (const a of addonsOf(item)) { a.addon = false; a.parentId = null; a.open = false; }
+  for (const a of addonsOf(item)) { a.addon = false; a.parentId = null; a.open = false; a.assigned = new Map(); a.uneven = false; }
   state.items = state.items.filter((i) => i.id !== id);
   renderItems();
   renderResults();
+}
+
+function addAddon(parent) {
+  if (state.items.length >= LIMITS.items) return;
+  const a = makeItem({ addon: true, parentId: parent.id });
+  a.open = true;
+  state.items.splice(blockEnd(parent), 0, a);
+  syncAddons(parent);
+  renderItems();
+  renderResults();
+  document.querySelector(`.addon[data-item="${a.id}"] input`)?.focus();
+}
+
+function makeAddonOf(item, parent) {
+  // Its own people are dropped: an add-on always follows its dish.
+  const own = addonsOf(item);
+  item.addon = true;
+  item.parentId = parent.id;
+  item.joined = null;
+  item.qty = 1;
+  item.qtyGuess = false;
+  item.open = false;
+  for (const a of own) a.parentId = parent.id; // add-ons are one level deep
+  moveAfter([item, ...own], parent);
+  syncAddons(parent);
+  renderItems();
+  renderResults();
+}
+
+function makeOwnItem(addon) {
+  const parent = byId(addon.parentId);
+  addon.addon = false;
+  addon.parentId = null;
+  addon.open = false;
+  addon.assigned = new Map();
+  addon.uneven = false;
+  if (parent) moveAfter([addon], parent);
+  renderItems();
+  renderResults();
+  focusItem(addon.id);
 }
 
 function splitApart(item) {
@@ -185,8 +294,7 @@ function splitApart(item) {
   else if (item.name === `${base}${suffix}`.slice(0, LIMITS.itemLen)) item.name = base;
   item.joined = null;
   const row = makeItem({ name: extra });
-  const at = state.items.indexOf(item) + 1 + addonsOf(item).length;
-  state.items.splice(at, 0, row);
+  state.items.splice(blockEnd(item), 0, row);
   renderItems();
   renderResults();
   focusItem(row.id, 1);
@@ -195,15 +303,16 @@ function splitApart(item) {
 function splitQuantity(item) {
   const n = item.qty;
   if (n < 2 || state.items.length + n - 1 > LIMITS.items) return;
+  if (item.qtyGuess) item.name = item.name.replace(/^\d{1,2}\s*/, ''); // "7 Layer Dip" x7 -> "Layer Dip"
   const parts = item.cents === null ? new Array(n).fill(null) : splitEven(item.cents, n);
   const copies = parts.map((c, k) => (k === 0 ? item : makeItem({ name: item.name, cents: c })));
   item.cents = parts[0];
   item.qty = 1;
+  item.qtyGuess = false;
   item.assigned = new Map();
   item.uneven = false;
   syncAddons(item);
-  const at = state.items.indexOf(item) + 1 + addonsOf(item).length;
-  state.items.splice(at, 0, ...copies.slice(1));
+  state.items.splice(blockEnd(item), 0, ...copies.slice(1));
   renderItems();
   renderResults();
 }
@@ -212,10 +321,10 @@ function splitQuantity(item) {
 function itemInputs(item, label) {
   const nameInput = el('input', {
     type: 'text', value: item.name, maxlength: LIMITS.itemLen, autocomplete: 'off',
-    placeholder: item.guess === 'added' ? 'What was it?' : 'Item', enterkeyhint: 'next', 'aria-label': `${label} name`,
+    placeholder: item.guess === 'added' ? 'What was it?' : item.addon ? 'Add-on' : 'Item', enterkeyhint: 'next', 'aria-label': `${label} name`,
   });
   const priceInput = el('input', {
-    type: 'text', inputmode: 'decimal', autocomplete: 'off', placeholder: '0.00', enterkeyhint: 'next',
+    type: 'text', inputmode: 'decimal', autocomplete: 'off', placeholder: '0.00', enterkeyhint: item.addon ? 'done' : 'next',
     value: item.cents === null ? '' : centsToInput(item.cents), 'aria-label': `${label} price`, 'aria-invalid': 'false',
   });
 
@@ -235,6 +344,7 @@ function itemInputs(item, label) {
     item.rawPrice = priceInput.value.trim().slice(0, 20);
     priceInput.setAttribute('aria-invalid', String(cents === null && priceInput.value.trim() !== ''));
     renderCheck();
+    renderPayerCalcs();
     renderResults();
   });
   priceInput.addEventListener('change', () => {
@@ -244,8 +354,10 @@ function itemInputs(item, label) {
   priceInput.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' || e.isComposing) return;
     e.preventDefault();
-    if (item.guess) { item.guess = null; renderItems(); renderResults(); }
-    if (item.addon) return;
+    const hadGuess = Boolean(item.guess);
+    item.guess = null;
+    if (item.addon) { closeAddon(item); return; }
+    if (hadGuess) { renderItems(); renderResults(); }
     const tops = topItems();
     const next = tops[tops.indexOf(item) + 1];
     if (next) focusItem(next.id);
@@ -256,6 +368,16 @@ function itemInputs(item, label) {
   });
 
   return { nameInput, priceInput };
+}
+
+function closeAddon(addon) {
+  if (!addon.name && addon.cents === null && !addon.rawPrice) {
+    state.items = state.items.filter((i) => i !== addon); // an empty add-on is just discarded
+  } else {
+    addon.open = false;
+  }
+  renderItems();
+  renderResults();
 }
 
 function sharesNote(item) {
@@ -303,11 +425,10 @@ function chipsFor(item, rerender) {
     chips.push(el('button', {
       type: 'button', class: 'chip chip-all', 'aria-pressed': String(everyone && !item.uneven), text: 'Everyone',
       onclick: () => {
-        // Everyone already on evenly -> clear. Otherwise everyone gets one share.
-        const clear = everyone && !item.uneven;
+        const clear = everyone && !item.uneven; // everyone on evenly -> clear; otherwise everyone gets one share
         item.uneven = false;
         item.assigned = clear ? new Map() : new Map(people.map((p) => [p.id, 1]));
-        if (!item.addon) syncAddons(item);
+        syncAddons(item);
         rerender();
       },
     }));
@@ -322,7 +443,7 @@ function chipsFor(item, rerender) {
         onclick: () => {
           item.uneven = false;
           for (const k of item.assigned.keys()) item.assigned.set(k, 1);
-          if (!item.addon) syncAddons(item);
+          syncAddons(item);
           rerender();
         },
       })
@@ -330,7 +451,7 @@ function chipsFor(item, rerender) {
   } else if (item.assigned.size >= 2) {
     wrap.append(el('button', {
       type: 'button', class: 'linkish', text: 'Uneven shares',
-      onclick: () => { item.uneven = true; if (!item.addon) syncAddons(item); rerender(); },
+      onclick: () => { item.uneven = true; syncAddons(item); rerender(); },
     }));
   }
   return wrap;
@@ -352,9 +473,8 @@ function renderAddon(addon, parent) {
   const rerender = () => { renderItems(); renderResults(); };
 
   if (!addon.open) {
-    const sub = addon.custom ? 'Assigned separately' : `Goes with ${parent.name || 'this dish'} · same people`;
     li.append(el('div', { class: 'addon-row' },
-      el('span', { class: 'addon-name' }, `+ ${addon.name || 'Add-on'}`, el('small', { text: sub })),
+      el('span', { class: 'addon-name' }, `+ ${addon.name || 'Add-on'}`, el('small', { text: `Goes with ${parent.name || 'this dish'} · same people` })),
       el('span', { class: 'addon-price', text: addon.cents === null ? '—' : formatMoney(addon.cents) }),
       el('button', { type: 'button', class: 'linkish', text: 'Change', onclick: () => { addon.open = true; rerender(); } })
     ));
@@ -366,22 +486,10 @@ function renderAddon(addon, parent) {
     el('div', { class: 'item-top' }, nameInput,
       el('button', { type: 'button', class: 'x-btn', 'aria-label': 'Remove add-on', text: '×', onclick: () => removeItem(addon.id) })),
     el('div', { class: 'item-price' }, el('div', { class: 'money' }, el('span', { 'aria-hidden': 'true', text: '$' }), priceInput)),
+    el('div', { class: 'item-links' },
+      el('button', { type: 'button', class: 'linkish', text: 'Make it its own item', onclick: () => makeOwnItem(addon) }),
+      el('button', { type: 'button', class: 'linkish', text: 'Done', onclick: () => closeAddon(addon) }))
   );
-  if (state.people.length) {
-    const editWrap = el('div', { class: 'addon-edit' });
-    const assignRerender = () => { addon.custom = true; rerender(); };
-    editWrap.append(chipsFor(addon, assignRerender));
-    li.append(editWrap);
-  }
-  li.append(el('div', {},
-    addon.custom
-      ? el('button', {
-          type: 'button', class: 'linkish', text: 'Same people as the dish',
-          onclick: () => { addon.custom = false; syncAddons(parent); rerender(); },
-        })
-      : null,
-    el('button', { type: 'button', class: 'linkish', text: 'Done', onclick: () => { addon.open = false; rerender(); } })
-  ));
   return li;
 }
 
@@ -390,6 +498,7 @@ function renderItems() {
   const tops = topItems();
   const rows = tops.map((item, idx) => {
     const missing = item.cents === null && !isBlank(item);
+    const isDiscount = item.cents !== null && item.cents < 0;
     const li = el('li', {
       class: `item${item.assigned.size ? ' is-assigned' : ''}${item.guess ? ' is-guess' : ''}${missing ? ' is-missing' : ''}`,
       'data-item': item.id, tabindex: '-1',
@@ -403,25 +512,32 @@ function renderItems() {
       el('div', { class: `item-price${item.guess ? ' guess' : ''}` },
         el('div', { class: 'money' }, el('span', { 'aria-hidden': 'true', text: '$' }), priceInput),
         ...guessControls(item),
-        missing && !item.guess && item.name ? el('span', { class: 'missing-note', text: 'No price found. Enter it or remove this row.' }) : null
+        missing && !item.guess && item.name ? el('span', { class: 'missing-note', text: 'No price found. Enter it or remove this row.' }) : null,
+        item.qty > 1 && !isDiscount
+          ? el('button', { type: 'button', class: 'linkish split-link', text: `Split into ${item.qty}${item.qtyGuess ? '?' : ''}`, onclick: () => splitQuantity(item) })
+          : null,
+        isDiscount ? el('button', { type: 'button', class: 'btn-confirm', text: 'Spread over the whole bill', onclick: () => spreadDiscount(item) }) : null
       )
     );
+    if (isDiscount) li.append(el('p', { class: 'discount-note', text: 'A discount. Tap who it was for, or spread it over everyone by what they ordered.' }));
 
-    const tags = [];
     if (item.joined) {
-      tags.push(el('span', { class: 'tag tag-joined' },
+      li.append(el('div', { class: 'item-tags' }, el('span', { class: 'tag tag-joined' },
         el('span', { class: 'tag-text', text: 'Joined from 2 lines' }),
-        el('button', { type: 'button', text: 'Split apart', onclick: () => splitApart(item) })));
+        el('button', { type: 'button', text: 'Split apart', onclick: () => splitApart(item) }))));
     }
-    if (item.qty > 1) {
-      tags.push(el('span', { class: 'tag' },
-        `${item.qty}× on the receipt`,
-        el('button', { type: 'button', text: `Split into ${item.qty}`, onclick: () => splitQuantity(item) })));
-    }
-    if (tags.length) li.append(el('div', { class: 'item-tags' }, ...tags));
 
     const addons = addonsOf(item);
     if (addons.length) li.append(el('ul', { class: 'addons', 'aria-label': 'Add-ons' }, ...addons.map((a) => renderAddon(a, item))));
+
+    if (!isBlank(item)) {
+      const above = tops[idx - 1];
+      li.append(el('div', { class: 'item-links' },
+        el('button', { type: 'button', class: 'linkish', text: '+ Add an add-on', onclick: () => addAddon(item) }),
+        above && !isBlank(above)
+          ? el('button', { type: 'button', class: 'linkish', text: `Make it an add-on of ${above.name || 'the item above'}`, onclick: () => makeAddonOf(item, above) })
+          : null));
+    }
 
     if (state.people.length) li.append(chipsFor(item, rerender));
     return li;
@@ -433,7 +549,11 @@ function renderItems() {
   renderCheck();
 }
 
+/** All items, including item discounts (what the subtotal on the receipt covers). */
 const itemsSum = () => state.items.reduce((s, i) => s + (i.cents ?? 0), 0);
+const checkSum = () => state.items.reduce((s, i) => s + (i.afterSubtotal ? 0 : i.cents ?? 0), 0);
+/** Food as ordered, before any discount. Percent tips are worked out on this. */
+const orderedSum = () => state.items.reduce((s, i) => s + (i.cents > 0 ? i.cents : 0), 0);
 
 /** Compare the items against the receipt's subtotal to catch misreads. */
 function renderCheck() {
@@ -443,7 +563,7 @@ function renderCheck() {
   if (subtotalCents === null || realItems().length === 0) {
     out.hidden = true;
   } else {
-    const sum = itemsSum();
+    const sum = checkSum();
     const diff = subtotalCents - sum;
     const guessed = state.items.some((i) => i.guess);
     out.hidden = false;
@@ -489,14 +609,14 @@ function guessMissingPrice() {
   if (subtotalCents === null) return;
   const open = state.items.filter((i) => i.cents === null && !isBlank(i));
   if (open.length !== 1) return;
-  const diff = subtotalCents - itemsSum();
+  const diff = subtotalCents - checkSum();
   if (diff > 0) {
     open[0].cents = diff;
     open[0].guess = 'guessed';
   }
 }
 
-/* -------------------------------------------------------- tax, fees and tip */
+/* -------------------------------------------------------------- discounts */
 
 function readMoneyField(id) {
   const raw = $(id).value.trim();
@@ -506,12 +626,132 @@ function readMoneyField(id) {
 }
 const readTax = () => readMoneyField('tax');
 const readFee = () => ($('fee-wrap').hidden ? 0 : readMoneyField('fee'));
+function readDisc() {
+  if ($('disc-wrap').hidden) return 0;
+  const raw = $('disc').value.trim();
+  if (!raw) return 0;
+  const cents = parseMoney(raw);
+  return cents === null ? null : Math.abs(cents); // "-10" and "10" both mean $10 off
+}
 
-function readTip() {
-  if (state.tipMode === 'amount') return readMoneyField('tip-amt');
+function showFees(show) { $('fee-wrap').hidden = !show; $('fee-show').hidden = show; }
+function showDisc(show) {
+  $('disc-wrap').hidden = !show;
+  $('disc-show').hidden = show;
+  renderDiscNote();
+}
+function renderDiscNote() {
+  const names = state.discNames;
+  $('disc-note').textContent = names.length
+    ? `${listAnd(names)}, spread by what each person ordered.`
+    : 'Coupons and other discounts on the whole bill, spread by what each person ordered.';
+  $('disc-to-row').hidden = !(readDisc() > 0);
+}
+
+function spreadDiscount(item) {
+  const current = readDisc() ?? 0;
+  $('disc').value = centsToInput(current + Math.abs(item.cents));
+  if (item.name) state.discNames.push(item.name);
+  for (const a of addonsOf(item)) { a.addon = false; a.parentId = null; }
+  state.items = state.items.filter((i) => i !== item);
+  showDisc(true);
+  renderItems();
+  renderResults();
+}
+
+function discountToRow() {
+  const amount = readDisc();
+  if (!amount) return;
+  const name = state.discNames.length === 1 ? state.discNames[0] : 'Discount';
+  const row = makeItem({ name, cents: -amount });
+  state.items.push(row);
+  $('disc').value = '';
+  state.discNames = [];
+  showDisc(false);
+  renderItems();
+  renderResults();
+  jumpTo(row.id);
+}
+
+/* -------------------------------------------------------------------- tip */
+
+const multiPay = () => state.people.filter((p) => state.payerIds.has(p.id)).length >= 2;
+const payers = () => state.people.filter((p) => state.payerIds.has(p.id));
+
+/** The bill before any tip: food after discounts, plus tax and fees. */
+const billBeforeTip = (tax, fee, disc) => itemsSum() - disc + tax + fee;
+const pctOfFood = (tip) => {
+  const food = orderedSum();
+  return food > 0 ? `${Math.round((tip * 100) / food)}% of the food` : '';
+};
+
+/** Single-payer tip. Returns { cents } or { error }. */
+function readSingleTip(tax, fee, disc) {
+  if (state.tipMode === 'amount') {
+    const c = readMoneyField('tip-amt');
+    return c === null ? { error: 'The tip amount doesn’t look like a dollar amount.' } : { cents: c };
+  }
+  if (state.tipMode === 'total') {
+    const raw = $('tip-total').value.trim();
+    if (!raw) return { error: 'Type the total you want to pay, tip included.' };
+    const total = parseMoney(raw);
+    if (total === null || total < 0) return { error: 'The total doesn’t look like a dollar amount.' };
+    const before = billBeforeTip(tax, fee, disc);
+    if (total < before) return { error: `The total is ${formatMoney(before - total)} less than the bill before tip (${formatMoney(before)}).` };
+    return { cents: total - before };
+  }
   const pct = parsePercent($('tip-pct').value);
-  if (pct === null) return null;
-  return Math.round((Math.max(0, itemsSum()) * pct) / 100);
+  if (pct === null) return { error: 'The tip percent should be a number from 0 to 100.' };
+  return { cents: Math.round((orderedSum() * pct) / 100) };
+}
+
+/** One payer's card: { card, tip } in cents, or { error }. */
+function readCard(person) {
+  const p = payEntry(person.id);
+  const name = person.name;
+  if (p.mode === 'total') {
+    if (!p.total.trim()) return { error: `Enter ${name}'s card total.`, empty: true };
+    const card = parseMoney(p.total);
+    if (card === null || card < 0) return { error: `${name}'s card total doesn’t look like a dollar amount.` };
+    return { card, tip: null };
+  }
+  if (!p.paid.trim()) return { error: `Enter what ${name} paid.`, empty: true };
+  const paid = parseMoney(p.paid);
+  if (paid === null || paid < 0) return { error: `What ${name} paid doesn’t look like a dollar amount.` };
+  let tip = 0;
+  if (p.mode === 'percent') {
+    const pct = parsePercent(p.pct);
+    if (pct === null) return { error: `${name}'s tip percent should be a number from 0 to 100.` };
+    tip = Math.round((paid * pct) / 100);
+  } else if (p.amt.trim()) {
+    tip = parseMoney(p.amt);
+    if (tip === null || tip < 0) return { error: `${name}'s tip doesn’t look like a dollar amount.` };
+  }
+  return { card: paid + tip, tip, paid };
+}
+
+/** Multi-payer tip from the cards. Returns { cents, cards: Map } or { error, id? }. */
+function readCardsTip(tax, fee, disc) {
+  const cards = new Map();
+  let paidSum = 0;
+  let anyTotal = false;
+  for (const person of payers()) {
+    const r = readCard(person);
+    if (r.error) return { error: r.error };
+    cards.set(person.id, r.card);
+    if (r.tip === null) anyTotal = true;
+    else paidSum += r.paid;
+  }
+  const sum = [...cards.values()].reduce((a, b) => a + b, 0);
+  const before = billBeforeTip(tax, fee, disc);
+  const gratuity = state.gratuityFromReceipt ? readMoneyField('tip-amt') ?? 0 : 0;
+  const bill = before + gratuity;
+  // Tips go on top of the bill, so the amounts paid before tip have to cover it.
+  if (!anyTotal && paidSum < bill) {
+    return { error: `The payments add up to ${formatMoney(paidSum)}, ${formatMoney(bill - paidSum)} less than the bill before tip (${formatMoney(bill)}).`, short: true, cards };
+  }
+  if (sum < bill) return { error: `The cards cover ${formatMoney(bill - sum)} less than the bill.`, short: true, cards };
+  return { cents: sum - before, cards, gratuity };
 }
 
 function syncTipPresets() {
@@ -522,24 +762,95 @@ function syncTipPresets() {
 }
 
 function setTipMode(mode) {
-  state.tipMode = mode === 'amount' ? 'amount' : 'percent';
+  state.tipMode = ['amount', 'total'].includes(mode) ? mode : 'percent';
   document.querySelectorAll('input[name="tip-mode"]').forEach((r) => { r.checked = r.value === state.tipMode; });
   $('tip-percent-wrap').hidden = state.tipMode !== 'percent';
   $('tip-amount-wrap').hidden = state.tipMode !== 'amount';
+  $('tip-total-wrap').hidden = state.tipMode !== 'total';
   renderTipNote();
   renderResults();
 }
 
 function renderTipNote() {
   const note = $('tip-note');
-  const show = state.gratuityFromReceipt && state.tipMode === 'amount';
+  const show = state.gratuityFromReceipt && state.tipMode === 'amount' && !multiPay();
   note.hidden = !show;
   note.textContent = show ? 'This receipt already includes a gratuity. It’s filled in as the tip, so don’t add another.' : '';
 }
 
-function showFees(show) {
-  $('fee-wrap').hidden = !show;
-  $('fee-show').hidden = show;
+/* ----------------------------------------------------------------- payers */
+
+function payerTipField(person, p) {
+  const rerender = () => { renderPayers(); renderResults(); };
+  const segName = `pay-mode-${person.id}`;
+  const seg = el('div', { class: 'seg small', role: 'radiogroup', 'aria-label': `${person.name}'s tip type` },
+    ...[['percent', 'Percent'], ['amount', 'Amount'], ['total', 'Total']].map(([v, label]) => {
+      const input = el('input', { type: 'radio', name: segName, value: v, checked: p.mode === v });
+      input.addEventListener('change', () => { p.mode = v; rerender(); });
+      return el('label', {}, input, ` ${label}`);
+    }));
+
+  const detail = el('div', { class: 'payer-detail' });
+  const moneyInput = (key, label) => {
+    const input = el('input', { type: 'text', inputmode: 'decimal', autocomplete: 'off', placeholder: '0.00', value: p[key], 'aria-label': label });
+    input.addEventListener('input', () => { p[key] = input.value.slice(0, 20); renderPayerCalcs(); renderResults(); });
+    input.addEventListener('blur', () => {
+      const c = parseMoney(input.value);
+      if (c !== null && c >= 0) { input.value = centsToInput(c); p[key] = input.value; }
+    });
+    return el('div', { class: 'money' }, el('span', { 'aria-hidden': 'true', text: '$' }), input);
+  };
+
+  if (p.mode === 'percent') {
+    const pctInput = el('input', { type: 'text', inputmode: 'decimal', autocomplete: 'off', value: p.pct, 'aria-label': `${person.name}'s tip percent` });
+    const presets = el('div', { class: 'chips' }, ...[15, 18, 20, 22].map((n) => el('button', {
+      type: 'button', class: 'chip', 'aria-pressed': String(parsePercent(p.pct) === n), text: `${n}%`,
+      onclick: () => { p.pct = String(n); rerender(); },
+    })));
+    pctInput.addEventListener('input', () => {
+      p.pct = pctInput.value.slice(0, 8);
+      presets.querySelectorAll('.chip').forEach((b) => b.setAttribute('aria-pressed', String(parsePercent(p.pct) === parseInt(b.textContent, 10))));
+      renderPayerCalcs();
+      renderResults();
+    });
+    detail.append(presets, el('div', { class: 'money pct' }, pctInput, el('span', { 'aria-hidden': 'true', text: '%' })));
+  } else if (p.mode === 'amount') {
+    detail.append(moneyInput('amt', `${person.name}'s tip`));
+  } else {
+    detail.append(moneyInput('total', `${person.name}'s card total, tip included`));
+  }
+  detail.append(el('p', { class: 'payer-calc', 'data-calc': person.id, 'aria-live': 'polite' }));
+  return { seg, detail, moneyInput };
+}
+
+function renderPayers() {
+  const multi = multiPay();
+  $('payers').hidden = !multi;
+  $('tip-single').hidden = multi;
+  renderTipNote();
+  if (!multi) { $('payer-blocks').replaceChildren(); return; }
+
+  $('payer-blocks').replaceChildren(...payers().map((person) => {
+    const p = payEntry(person.id);
+    const { seg, detail, moneyInput } = payerTipField(person, p);
+    return el('div', { class: 'payer-block' },
+      el('h3', { text: person.name }),
+      p.mode === 'total' ? null : el('div', { class: 'payer-row' }, el('span', { text: 'Paid' }), moneyInput('paid', `What ${person.name} paid, before tip`)),
+      el('div', { class: 'payer-row' }, el('span', { text: 'Tip' }), seg),
+      detail);
+  }));
+  renderPayerCalcs();
+}
+
+function renderPayerCalcs() {
+  if (!multiPay()) return;
+  for (const person of payers()) {
+    const out = document.querySelector(`[data-calc="${person.id}"]`);
+    if (!out) continue;
+    const r = readCard(person);
+    if (r.error) { out.textContent = r.empty ? '' : r.error; continue; }
+    out.textContent = r.tip === null ? `Card total ${formatMoney(r.card)}` : `Tip ${formatMoney(r.tip)} · card total ${formatMoney(r.card)}`;
+  }
 }
 
 /* ----------------------------------------------------------------- results */
@@ -556,27 +867,43 @@ function jumpTo(id) {
   li.focus({ preventScroll: true });
 }
 
-/** The first thing stopping the split, and which item to jump to for it. */
-function blocker(tax, tip, fee) {
-  if (!state.people.length) return { text: 'Add the people splitting the bill.' };
-  if (!realItems().length) return { text: 'Add the items from the receipt.' };
-  const label = (i) => i.name || `the ${i.cents === null ? 'unnamed' : formatMoney(i.cents)} item`;
+/** Everything the split needs, or the first thing stopping it. */
+function gather() {
+  if (!state.people.length) return { block: { text: 'Add the people splitting the bill.' } };
+  if (!realItems().length) return { block: { text: 'Add the items from the receipt.' } };
 
   const noPrice = state.items.find((i) => i.cents === null && !isBlank(i));
-  if (noPrice) return { text: `${label(noPrice)} needs a price. Tap to jump to it.`, id: noPrice.id };
+  if (noPrice) return { block: { text: `${cap(itemLabel(noPrice))} needs a price. Tap to jump to it.`, id: noPrice.id } };
   const guess = state.items.find((i) => i.guess);
-  if (guess) return { text: `Confirm the guessed price for ${label(guess)}. Tap to jump to it.`, id: guess.id };
-  if (tax === null) return { text: 'The tax amount doesn’t look like a dollar amount.' };
-  if (fee === null) return { text: 'The fee amount doesn’t look like a dollar amount.' };
-  if (tip === null) return { text: state.tipMode === 'percent' ? 'The tip percent should be a number from 0 to 100.' : 'The tip amount doesn’t look like a dollar amount.' };
+  if (guess) return { block: { text: `Confirm the guessed price for ${itemLabel(guess)}. Tap to jump to it.`, id: guess.id } };
 
-  const open = realItems().filter((i) => i.assigned.size === 0 && (isTop(i) || i.custom));
-  if (open.length) {
-    const names = open.slice(0, 3).map(label).join(', ');
-    const more = open.length > 3 ? ` and ${open.length - 3} more` : '';
-    return { text: `Still unclaimed: ${names}${more}. Tap to jump to ${open.length === 1 ? 'it' : 'the first one'}.`, id: open[0].id };
+  const tax = readTax();
+  const fee = readFee();
+  const disc = readDisc();
+  if (tax === null) return { block: { text: 'The tax amount doesn’t look like a dollar amount.' } };
+  if (fee === null) return { block: { text: 'The fee amount doesn’t look like a dollar amount.' } };
+  if (disc === null) return { block: { text: 'The discount doesn’t look like a dollar amount.' } };
+
+  let tip;
+  let cards = null;
+  if (multiPay()) {
+    const r = readCardsTip(tax, fee, disc);
+    if (r.error) return { block: { text: r.error }, cardsShort: r.short };
+    tip = r.cents;
+    cards = r.cards;
+  } else {
+    const r = readSingleTip(tax, fee, disc);
+    if (r.error) return { block: { text: r.error } };
+    tip = r.cents;
   }
-  return null;
+
+  const open = topItems().filter((i) => !isBlank(i) && i.assigned.size === 0);
+  if (open.length) {
+    const names = open.slice(0, 3).map(itemLabel).join(', ');
+    const more = open.length > 3 ? ` and ${open.length - 3} more` : '';
+    return { block: { text: `Still unclaimed: ${names}${more}. Tap to jump to ${open.length === 1 ? 'it' : 'the first one'}.`, id: open[0].id } };
+  }
+  return { tax, fee, disc, tip, cards };
 }
 
 function lineLabel(l) {
@@ -591,24 +918,58 @@ function lineText(l) {
   return '';
 }
 
-function owesText(row, payer, grand) {
-  if (!payer) return null;
-  if (payer.id === row.id) return `Covered the bill. Gets back ${formatMoney(grand - row.total)}`;
-  if (row.total > 0) return `Pays ${payer.name} back ${formatMoney(row.total)}`;
-  return null;
+/** Who pays whom, and the sentence under each person's slip. */
+function settle(result, cards) {
+  const ids = [...state.payerIds].filter((id) => state.people.some((p) => p.id === id));
+  if (!ids.length) return { payments: [], owes: () => null };
+  const paid = new Map();
+  if (cards) for (const [id, c] of cards) paid.set(id, c);
+  else paid.set(ids[0], result.grandTotal); // one payer covered the whole bill
+  const payments = settleUp(result.rows.map((r) => ({ id: r.id, cents: (paid.get(r.id) || 0) - r.total })));
+
+  const owes = (row) => {
+    const gets = payments.filter((p) => p.to === row.id);
+    const pays = payments.filter((p) => p.from === row.id);
+    const getsTotal = gets.reduce((s, p) => s + p.cents, 0);
+    if (!cards) {
+      if (paid.has(row.id)) return `Covered the bill. Gets back ${formatMoney(getsTotal)}`;
+      return pays.length ? `Pays ${personName(pays[0].to)} back ${formatMoney(pays[0].cents)}` : null;
+    }
+    const paysText = listAnd(pays.map((p) => `${personName(p.to)} ${formatMoney(p.cents)}`));
+    if (paid.has(row.id)) {
+      const start = `Paid ${formatMoney(paid.get(row.id))} by card.`;
+      if (gets.length) return `${start} Gets back ${formatMoney(getsTotal)} (${gets.map((p) => `${personName(p.from)} ${formatMoney(p.cents)}`).join(', ')})`;
+      if (pays.length) return `${start} Pays ${paysText}`;
+      return `${start} All square.`;
+    }
+    return pays.length ? `Pays ${paysText}` : null;
+  };
+  return { payments, owes };
 }
 
 /** Plain text for pasting into a message. No alignment, no symbols that turn into boxes. */
-function slipText(row, payer, result) {
+function slipText(row, result, owes) {
   const out = [`${row.name}'s share`];
   for (const l of row.lines) out.push(`${l.addon ? '+ ' : ''}${l.name}${lineText(l)}: ${formatMoney(l.cents)}`);
   out.push(`Food & drink: ${formatMoney(row.subtotal)}`);
+  if (row.discount) out.push(`Discount: ${formatMoney(row.discount)}`);
   out.push(`Tax: ${formatMoney(row.tax)}`);
   if (result.feeCents) out.push(`Fees: ${formatMoney(row.fee)}`);
   out.push(`Tip: ${formatMoney(row.tip)}`);
   out.push(`Total: ${formatMoney(row.total)}`);
-  const owes = owesText(row, payer, result.grandTotal);
-  if (owes) out.push(owes);
+  const o = owes(row);
+  if (o) out.push(o);
+  return out.join('\n');
+}
+
+function summaryText(result, payments) {
+  const out = ["Everyone's totals"];
+  for (const r of result.rows) out.push(`${r.name}: ${formatMoney(r.total)}`);
+  out.push(`Bill: ${formatMoney(result.grandTotal)}`);
+  if (payments.length) {
+    out.push('');
+    for (const p of payments) out.push(`${personName(p.from)} pays ${personName(p.to)} ${formatMoney(p.cents)}`);
+  }
   return out.join('\n');
 }
 
@@ -644,21 +1005,60 @@ async function copyText(text, button, doneLabel, idleLabel) {
   }, 2000);
 }
 
+function copyButton(label, getText, cls = 'copy-btn') {
+  const b = el('button', { type: 'button', class: cls, text: label });
+  b.addEventListener('click', () => copyText(getText(), b, 'Copied', label));
+  return b;
+}
+
+function renderCardsLine() {
+  const tipOut = $('cards-tip');
+  const check = $('cards-check');
+  if (!multiPay()) { tipOut.textContent = ''; check.textContent = ''; return; }
+  const tax = readTax() ?? 0;
+  const fee = readFee() ?? 0;
+  const disc = readDisc() ?? 0;
+  const r = readCardsTip(tax, fee, disc);
+  if (r.error) {
+    tipOut.textContent = '';
+    check.className = 'check warn';
+    check.textContent = r.short ? r.error : '';
+    return;
+  }
+  const grat = r.gratuity ? `, including the receipt's ${formatMoney(r.gratuity)} gratuity` : '';
+  const pct = pctOfFood(r.cents);
+  tipOut.textContent = `Tip from the cards: ${formatMoney(r.cents)}${grat}${pct ? ` (about ${pct})` : ''}`;
+  check.className = 'check ok';
+  check.textContent = 'The cards cover the whole bill.';
+}
+
+function renderTotalCalc() {
+  const out = $('tip-total-calc');
+  if (state.tipMode !== 'total' || multiPay()) { out.textContent = ''; return; }
+  const r = readSingleTip(readTax() ?? 0, readFee() ?? 0, readDisc() ?? 0);
+  if (r.error) { out.textContent = $('tip-total').value.trim() ? r.error : ''; return; }
+  const pct = pctOfFood(r.cents);
+  out.textContent = `Tip works out to ${formatMoney(r.cents)}${pct ? ` (${pct})` : ''}`;
+}
+
 function renderResults() {
   const tax = readTax();
-  const tip = readTip();
   const fee = readFee();
+  const disc = readDisc();
   $('tax').setAttribute('aria-invalid', String(tax === null));
   $('fee').setAttribute('aria-invalid', String(fee === null));
-  $('tip-pct').setAttribute('aria-invalid', String(state.tipMode === 'percent' && tip === null));
-  $('tip-amt').setAttribute('aria-invalid', String(state.tipMode === 'amount' && tip === null));
+  $('disc').setAttribute('aria-invalid', String(disc === null));
+  $('disc-to-row').hidden = !(disc > 0);
+  renderTotalCalc();
+  renderCardsLine();
 
-  const block = blocker(tax, tip, fee);
+  const g = gather();
   const blockedEl = $('results-blocked');
-  if (block) {
+  if (g.block) {
     blockedEl.replaceChildren(
-      block.id ? el('button', { type: 'button', class: 'blocked-link', text: block.text, onclick: () => jumpTo(block.id) }) : block.text
+      g.block.id ? el('button', { type: 'button', class: 'blocked-link', text: g.block.text, onclick: () => jumpTo(g.block.id) }) : g.block.text
     );
+    $('summary').replaceChildren();
     $('slips').replaceChildren();
     $('results-foot').hidden = true;
     $('copy-all').hidden = true;
@@ -666,11 +1066,23 @@ function renderResults() {
   }
   blockedEl.replaceChildren();
 
-  const result = computeSplit({ people: state.people, items: realItems(), taxCents: tax, tipCents: tip, feeCents: fee });
-  const payer = state.people.find((p) => p.id === state.payerId);
+  const result = computeSplit({ people: state.people, items: realItems(), taxCents: g.tax, tipCents: g.tip, feeCents: g.fee, discountCents: g.disc });
+  const { payments, owes } = settle(result, g.cards);
+
+  // Totals-only card: one screenshot for the whole table.
+  $('summary').replaceChildren(
+    el('div', { class: 'summary', 'aria-label': "Everyone's totals" },
+      el('h3', { text: "Everyone's totals" }),
+      ...result.rows.map((r) => el('div', { class: 'sum-row' }, el('span', { text: r.name }), el('span', { text: formatMoney(r.total) }))),
+      el('div', { class: 'sum-row grand' }, el('span', { text: 'Bill' }), el('span', { text: formatMoney(result.grandTotal) })),
+      payments.length
+        ? el('div', { class: 'sum-pay' }, ...payments.map((p) => el('p', { text: `${personName(p.from)} pays ${personName(p.to)} ${formatMoney(p.cents)}` })))
+        : null),
+    el('div', { class: 'sum-copy' }, copyButton('Copy totals', () => summaryText(result, payments)))
+  );
 
   const slips = result.rows.map((row) => {
-    const isPayer = payer && payer.id === row.id;
+    const isPayer = state.payerIds.has(row.id);
     const lines = row.lines.length
       ? row.lines.map((l) => {
           const extra = lineLabel(l);
@@ -680,11 +1092,8 @@ function renderResults() {
         })
       : [el('li', { class: 'slip-line' }, el('span', { class: 'shared', text: 'Nothing assigned' }), el('span', { text: '' }))];
 
-    const owes = owesText(row, payer, result.grandTotal);
-    const label = `Copy ${row.name}'s share`;
-    const copyBtn = el('button', { type: 'button', class: 'copy-btn', text: label });
-    copyBtn.addEventListener('click', () => copyText(slipText(row, payer, result), copyBtn, 'Copied', label));
-
+    const o = owes(row);
+    const sum = (label, cents) => el('div', { class: 'slip-sum' }, el('span', { text: label }), el('span', { text: formatMoney(cents) }));
     return el('div', { class: 'slip-wrap' },
       el('article', { class: 'slip', 'aria-label': `${row.name}'s share` },
         el('div', { class: 'slip-head' },
@@ -692,35 +1101,47 @@ function renderResults() {
           isPayer ? el('span', { class: 'slip-tag payer', text: 'Paid' }) : null),
         el('ul', { class: 'slip-lines' }, ...lines),
         el('div', { class: 'slip-sums' },
-          el('div', { class: 'slip-sum' }, el('span', { text: 'Food & drink' }), el('span', { text: formatMoney(row.subtotal) })),
-          el('div', { class: 'slip-sum' }, el('span', { text: 'Tax' }), el('span', { text: formatMoney(row.tax) })),
-          result.feeCents ? el('div', { class: 'slip-sum' }, el('span', { text: 'Fees' }), el('span', { text: formatMoney(row.fee) })) : null,
-          el('div', { class: 'slip-sum' }, el('span', { text: 'Tip' }), el('span', { text: formatMoney(row.tip) }))),
+          sum('Food & drink', row.subtotal),
+          row.discount ? sum('Discount', row.discount) : null,
+          sum('Tax', row.tax),
+          result.feeCents ? sum('Fees', row.fee) : null,
+          sum('Tip', row.tip)),
         el('div', { class: 'slip-total' }, el('span', { text: 'Total' }), el('span', { text: formatMoney(row.total) })),
-        owes ? el('p', { class: 'slip-owes', text: owes }) : null),
-      el('div', { class: 'copy-row' }, copyBtn)
+        o ? el('p', { class: 'slip-owes', text: o }) : null),
+      el('div', { class: 'copy-row' }, copyButton(`Copy ${row.name}'s share`, () => slipText(row, result, owes)))
     );
   });
-
   $('slips').replaceChildren(...slips);
 
   const allBtn = $('copy-all');
   allBtn.hidden = result.rows.length < 2;
   allBtn.onclick = () => {
-    const text = result.rows.map((r) => slipText(r, payer, result)).join('\n\n') + `\n\nEveryone together: ${formatMoney(result.grandTotal)}`;
+    const text = result.rows.map((r) => slipText(r, result, owes)).join('\n\n') + `\n\nEveryone together: ${formatMoney(result.grandTotal)}`;
     copyText(text, allBtn, 'Copied everyone', 'Copy everyone\'s shares');
   };
 
-  const foot = $('results-foot');
-  const feePart = result.feeCents ? ` + ${formatMoney(result.feeCents)} fees` : '';
-  let text = `Everyone together: ${formatMoney(result.grandTotal)} (${formatMoney(result.itemsTotal)} + ${formatMoney(tax)} tax${feePart} + ${formatMoney(tip)} tip).`;
-  const { totalCents } = state.receipt;
-  if (totalCents !== null) {
-    if (totalCents === result.grandTotal) text += ' Matches the total on the receipt.';
-    else if (totalCents === result.grandTotal - tip) text += ' Matches the receipt total plus your tip.';
+  const parts = [formatMoney(result.itemsTotal)];
+  if (result.discountCents) parts.push(`− ${formatMoney(result.discountCents)} discount`);
+  parts.push(`+ ${formatMoney(g.tax)} tax`);
+  if (result.feeCents) parts.push(`+ ${formatMoney(result.feeCents)} fees`);
+  parts.push(`+ ${formatMoney(g.tip)} tip`);
+  let text = `Everyone together: ${formatMoney(result.grandTotal)} (${parts.join(' ')}).`;
+  if (g.cards) {
+    text += ' Matches what the cards paid.';
+  } else if (state.receipt.totalCents !== null) {
+    if (state.receipt.totalCents === result.grandTotal) text += ' Matches the total on the receipt.';
+    else if (state.receipt.totalCents === result.grandTotal - g.tip) text += ' Matches the receipt total plus your tip.';
   }
+  const foot = $('results-foot');
   foot.textContent = text;
   foot.hidden = false;
+}
+
+function renderAll() {
+  renderPeople();
+  renderItems();
+  renderPayers();
+  renderResults();
 }
 
 /* ---------------------------------------------------------------- scanning */
@@ -738,9 +1159,12 @@ function showError(msg) {
   e.hidden = !msg;
 }
 
-function dropPreview() {
+function dropPhoto() {
   if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
   state.previewUrl = null;
+  state.photo = null;
+  state.rotation = 0;
+  state.crop = null;
   $('preview-img').removeAttribute('src');
 }
 
@@ -762,14 +1186,17 @@ async function decodeImage(file) {
   }
 }
 
+const srcSize = (src) => ({ w: src.naturalWidth || src.width, h: src.naturalHeight || src.height });
+
 /** Resize to a size the reader likes and convert to grayscale. */
 function grayCanvas(source) {
-  const longSide = Math.max(source.width, source.height);
+  const { w: w0, h: h0 } = srcSize(source);
+  const longSide = Math.max(w0, h0);
   let scale = 1;
   if (longSide > 2400) scale = 2400 / longSide;
   else if (longSide < 1400) scale = 1400 / longSide;
-  const w = Math.max(1, Math.round(source.width * scale));
-  const h = Math.max(1, Math.round(source.height * scale));
+  const w = Math.max(1, Math.round(w0 * scale));
+  const h = Math.max(1, Math.round(h0 * scale));
 
   const canvas = document.createElement('canvas');
   canvas.width = w;
@@ -784,7 +1211,6 @@ function grayCanvas(source) {
     d[i] = d[i + 1] = d[i + 2] = y;
   }
   ctx.putImageData(img, 0, 0);
-  if (typeof source.close === 'function') source.close();
   return canvas;
 }
 
@@ -810,7 +1236,6 @@ function evenedCanvas(gray) {
   const grid = new Float32Array(gw * gh);
   for (let gy = 0; gy < gh; gy++) {
     for (let gx = 0; gx < gw; gx++) {
-      // 90th percentile of the block, from a coarse histogram
       const hist = new Uint32Array(64);
       let n = 0;
       for (let y = gy * B; y < Math.min(h, gy * B + B); y += 2) {
@@ -825,7 +1250,6 @@ function evenedCanvas(gray) {
       grid[gy * gw + gx] = (v << 2) + 2;
     }
   }
-  // Smooth the background estimate so block edges don't show.
   const smooth = new Float32Array(gw * gh);
   for (let gy = 0; gy < gh; gy++) {
     for (let gx = 0; gx < gw; gx++) {
@@ -853,10 +1277,9 @@ function evenedCanvas(gray) {
       const fx = Math.min(gw - 1.001, Math.max(0, x / B - 0.5));
       const x0 = Math.floor(fx);
       const tx = fx - x0;
-      const i00 = y0 * gw + x0;
       const x1 = Math.min(gw - 1, x0 + 1);
       const y1 = Math.min(gh - 1, y0 + 1);
-      const bg = (smooth[i00] * (1 - tx) + smooth[y0 * gw + x1] * tx) * (1 - ty)
+      const bg = (smooth[y0 * gw + x0] * (1 - tx) + smooth[y0 * gw + x1] * tx) * (1 - ty)
         + (smooth[y1 * gw + x0] * (1 - tx) + smooth[y1 * gw + x1] * tx) * ty;
       const p = (y * w + x) * 4;
       const v = Math.min(255, (d[p] * 245) / bg);
@@ -864,7 +1287,6 @@ function evenedCanvas(gray) {
       hist[v | 0]++;
     }
   }
-  // Stretch: darkest 1% becomes black.
   let lo = 0;
   let acc = 0;
   const total = w * h;
@@ -891,6 +1313,12 @@ async function readImage(worker, canvas) {
   return bestParse(linesFromBlocks(data.blocks), textFromWords(wordsFromBlocks(data.blocks)), data.text || '');
 }
 
+/** A new reading replaces the list, so ask first if anyone's already been assigned. */
+function confirmReplace() {
+  if (!state.items.some((i) => i.assigned.size > 0)) return true;
+  return window.confirm('Reading a new photo replaces the item list and who had what. Go ahead?');
+}
+
 async function scan(file) {
   showError('');
   if (!file) return;
@@ -902,15 +1330,21 @@ async function scan(file) {
     showError('That photo is over 25 MB. Take a new one or use a smaller copy.');
     return;
   }
+  if (!confirmReplace()) return;
+  dropPhoto();
+  state.photo = file;
+  state.previewUrl = URL.createObjectURL(file);
+  $('preview-img').src = state.previewUrl;
+  await read(async () => decodeImage(file));
+}
+
+/** Run the reader on whatever `getSource` produces (the whole photo, or a crop of it). */
+async function read(getSource) {
   if (typeof window.Tesseract === 'undefined') {
     showError('The receipt reader didn’t load. Refresh the page and try again.');
     return;
   }
-
   const token = ++state.scanToken;
-  dropPreview();
-  state.previewUrl = URL.createObjectURL(file);
-  $('preview-img').src = state.previewUrl;
   showReceiptState('busy');
   $('busy-text').textContent = 'Getting the reader ready…';
   $('busy-bar').value = 0;
@@ -920,8 +1354,9 @@ async function scan(file) {
   let evened = null;
   let pass = 1;
   try {
-    const source = await decodeImage(file);
+    const source = await getSource();
     gray = grayCanvas(source);
+    if (typeof source.close === 'function') source.close();
     evened = evenedCanvas(gray);
 
     const base = document.baseURI;
@@ -945,7 +1380,6 @@ async function scan(file) {
 
     let parsed = await readImage(worker, evened);
     if (token !== state.scanToken) return;
-    // If the items don't add up to the subtotal, read the plain version too and keep the better one.
     if (scoreParse(parsed) < 10000) {
       pass = 2;
       const second = await readImage(worker, gray);
@@ -957,23 +1391,39 @@ async function scan(file) {
   } catch (err) {
     if (token !== state.scanToken) return;
     console.error(err);
-    dropPreview();
-    showReceiptState('empty');
-    showError('Couldn’t read that photo. Try again with the receipt flat and well lit, or type the items in.');
+    if (state.photo) {
+      showReceiptState('done');
+      showError('Couldn’t read that. Try cropping again, or use a different photo.');
+    } else {
+      dropPhoto();
+      showReceiptState('empty');
+      showError('Couldn’t read that photo. Try again with the receipt flat and well lit, or type the items in.');
+    }
   } finally {
     if (worker) worker.terminate().catch(() => {});
     for (const c of [gray, evened]) if (c) { c.width = 0; c.height = 0; }
   }
 }
 
+function resetTip() {
+  $('tip-amt').value = '';
+  $('tip-total').value = '';
+  state.gratuityFromReceipt = false;
+  setTipMode('percent');
+}
+
 function applyParsed(parsed, { append = false, noteEl = $('receipt-note') } = {}) {
+  hideUndo();
   state.items = append ? state.items.filter((i) => !isBlank(i)) : [];
   let room = LIMITS.items - state.items.length;
   const created = [];
   parsed.items.forEach((p, idx) => {
     if (room <= 0) return;
     const parent = p.addon ? created[p.parent] : null;
-    const item = makeItem({ name: p.name, cents: p.cents, qty: p.qty || 1, joined: p.joined, addon: Boolean(parent), parentId: parent ? parent.id : null });
+    const item = makeItem({
+      name: p.name, cents: p.cents, qty: p.qty || 1, qtyGuess: Boolean(p.qtyGuess), joined: p.joined,
+      addon: Boolean(parent), parentId: parent ? parent.id : null, afterSubtotal: Boolean(p.afterSubtotal),
+    });
     created[idx] = item;
     state.items.push(item);
     room--;
@@ -984,10 +1434,15 @@ function applyParsed(parsed, { append = false, noteEl = $('receipt-note') } = {}
     if (parsed.totalCents !== null) state.receipt.totalCents = parsed.totalCents;
     if (parsed.taxCents !== null && !$('tax').value.trim()) $('tax').value = centsToInput(parsed.taxCents);
   } else {
+    // A new receipt starts clean: nothing carried over from the last one.
     state.receipt = { subtotalCents: parsed.subtotalCents, totalCents: parsed.totalCents };
     $('tax').value = parsed.taxCents !== null ? centsToInput(parsed.taxCents) : '';
     $('fee').value = '';
-    state.gratuityFromReceipt = false;
+    $('disc').value = '';
+    state.discNames = [];
+    showFees(false);
+    showDisc(false);
+    resetTip();
   }
   if (parsed.feeCents && !$('fee').value.trim()) {
     $('fee').value = centsToInput(parsed.feeCents);
@@ -1000,16 +1455,20 @@ function applyParsed(parsed, { append = false, noteEl = $('receipt-note') } = {}
   }
   guessMissingPrice();
 
-  const dishes = created.filter((i) => i && !i.addon).length;
+  const dishes = created.filter((i) => i && !i.addon && !(i.cents < 0)).length;
   const extras = created.filter((i) => i && i.addon).length;
+  const discounts = created.filter((i) => i && !i.addon && i.cents < 0).length;
   if (parsed.cardSlip) {
     noteEl.textContent = 'This looks like the card slip, not the itemized check. Take a photo of the check that lists the dishes.';
-  } else if (dishes + extras === 0) {
+  } else if (dishes + extras + discounts === 0) {
     noteEl.textContent = append
       ? 'No prices found in that text. Each item needs its price on the same line, like “Iced Tea 3.75”.'
-      : 'No prices found in that photo. Try a sharper shot, or add the items by hand below.';
+      : 'No prices found in that photo. Try a sharper shot or crop it, or add the items by hand below.';
   } else {
-    const bits = [`Found ${dishes} item${dishes === 1 ? '' : 's'}${extras ? ` and ${extras} add-on${extras === 1 ? '' : 's'}` : ''}`];
+    const found = [`${dishes} item${dishes === 1 ? '' : 's'}`];
+    if (extras) found.push(`${extras} add-on${extras === 1 ? '' : 's'}`);
+    if (discounts) found.push(`${discounts} discount${discounts === 1 ? '' : 's'}`);
+    const bits = [`Found ${listAnd(found)}`];
     if (parsed.taxCents !== null) bits.push(`${formatMoney(parsed.taxCents)} tax`);
     if (parsed.feeCents) bits.push(`${formatMoney(parsed.feeCents)} in fees`);
     if (parsed.tipCents !== null) bits.push(`${formatMoney(parsed.tipCents)} ${parsed.gratuity ? 'gratuity' : 'tip'}`);
@@ -1018,7 +1477,178 @@ function applyParsed(parsed, { append = false, noteEl = $('receipt-note') } = {}
 
   renderTipNote();
   renderItems();
+  renderPayers();
   renderResults();
+}
+
+/* -------------------------------------------------------- crop and rotate */
+
+const crop = { img: null, drag: null };
+
+function rotatedSize() {
+  const { w, h } = srcSize(crop.img);
+  return state.rotation % 180 ? { rw: h, rh: w } : { rw: w, rh: h };
+}
+
+/** Draw the photo turned by `rotation` degrees, in rotated-image coordinates. */
+function drawRotated(ctx, img, rw, rh) {
+  const { w, h } = srcSize(img);
+  ctx.save();
+  if (state.rotation === 90) { ctx.translate(rw, 0); ctx.rotate(Math.PI / 2); }
+  else if (state.rotation === 180) { ctx.translate(rw, rh); ctx.rotate(Math.PI); }
+  else if (state.rotation === 270) { ctx.translate(0, rh); ctx.rotate(-Math.PI / 2); }
+  ctx.drawImage(img, 0, 0, w, h);
+  ctx.restore();
+}
+
+function drawCrop() {
+  const canvas = $('crop-canvas');
+  const { rw, rh } = rotatedSize();
+  const maxW = $('crop').querySelector('.crop-inner').clientWidth || 360;
+  const maxH = Math.max(240, window.innerHeight * 0.62);
+  const scale = Math.min(maxW / rw, maxH / rh, 1);
+  const cssW = Math.max(1, Math.round(rw * scale));
+  const cssH = Math.max(1, Math.round(rh * scale));
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  canvas.style.width = `${cssW}px`;
+  canvas.style.height = `${cssH}px`;
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform((cssW * dpr) / rw, 0, 0, (cssH * dpr) / rh, 0, 0);
+  ctx.imageSmoothingQuality = 'high';
+  drawRotated(ctx, crop.img, rw, rh);
+  placeBox();
+}
+
+function placeBox() {
+  const r = state.crop;
+  const box = $('crop-box');
+  box.style.left = `${r.x * 100}%`;
+  box.style.top = `${r.y * 100}%`;
+  box.style.width = `${r.w * 100}%`;
+  box.style.height = `${r.h * 100}%`;
+}
+
+const fullCrop = () => ({ x: 0.04, y: 0.03, w: 0.92, h: 0.94 });
+
+async function openCrop() {
+  if (!state.photo) return;
+  try {
+    crop.img = await decodeImage(state.photo);
+  } catch {
+    showError('Couldn’t open that photo for cropping.');
+    return;
+  }
+  if (!state.crop) state.crop = fullCrop();
+  $('crop').hidden = false;
+  document.body.classList.add('no-scroll');
+  drawCrop();
+  $('crop-read').focus();
+}
+
+function closeCrop() {
+  $('crop').hidden = true;
+  document.body.classList.remove('no-scroll');
+  if (crop.img && typeof crop.img.close === 'function') crop.img.close();
+  crop.img = null;
+  const canvas = $('crop-canvas');
+  canvas.width = 0;
+  canvas.height = 0;
+  $('crop-open').focus();
+}
+
+/** Move one edge set of the crop box, keeping it inside the photo and at least 8% in size. */
+function resizeCrop(handle, dx, dy) {
+  const MIN = 0.08;
+  const r = { ...state.crop };
+  let x1 = r.x;
+  let y1 = r.y;
+  let x2 = r.x + r.w;
+  let y2 = r.y + r.h;
+  if (handle === 'move') {
+    const nx = Math.min(1 - r.w, Math.max(0, r.x + dx));
+    const ny = Math.min(1 - r.h, Math.max(0, r.y + dy));
+    state.crop = { ...r, x: nx, y: ny };
+    placeBox();
+    return;
+  }
+  if (handle.includes('l')) x1 = Math.min(x2 - MIN, Math.max(0, x1 + dx));
+  if (handle.includes('r')) x2 = Math.max(x1 + MIN, Math.min(1, x2 + dx));
+  if (handle.includes('t')) y1 = Math.min(y2 - MIN, Math.max(0, y1 + dy));
+  if (handle.includes('b')) y2 = Math.max(y1 + MIN, Math.min(1, y2 + dy));
+  state.crop = { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+  placeBox();
+}
+
+function onCropPointerDown(e) {
+  const handle = e.target.closest('.handle')?.dataset.h || (e.target.closest('#crop-box') ? 'move' : null);
+  if (!handle) return;
+  e.preventDefault();
+  const rect = $('crop-canvas').getBoundingClientRect();
+  crop.drag = { handle, x: e.clientX, y: e.clientY, w: rect.width, h: rect.height, id: e.pointerId };
+  e.target.setPointerCapture?.(e.pointerId);
+}
+
+function onCropPointerMove(e) {
+  const d = crop.drag;
+  if (!d || e.pointerId !== d.id) return;
+  const dx = (e.clientX - d.x) / d.w;
+  const dy = (e.clientY - d.y) / d.h;
+  d.x = e.clientX;
+  d.y = e.clientY;
+  resizeCrop(d.handle, dx, dy);
+}
+
+function onCropPointerUp(e) {
+  if (crop.drag && e.pointerId === crop.drag.id) crop.drag = null;
+}
+
+function onHandleKey(e) {
+  const handle = e.target.dataset.h;
+  const step = e.shiftKey ? 0.1 : 0.02;
+  const moves = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
+  if (!handle || !moves[e.key]) return;
+  e.preventDefault();
+  resizeCrop(handle, ...moves[e.key]);
+}
+
+function rotateCrop() {
+  state.rotation = (state.rotation + 90) % 360;
+  state.crop = fullCrop();
+  drawCrop();
+}
+
+async function readCrop() {
+  if (!crop.img) return;
+  if (!confirmReplace()) return;
+  const img = crop.img;
+  crop.img = null; // the reader owns it now
+  const r = state.crop;
+  $('crop').hidden = true;
+  document.body.classList.remove('no-scroll');
+  const canvas = $('crop-canvas');
+  canvas.width = 0;
+  canvas.height = 0;
+  await read(async () => {
+    // Cut the crop out of the turned photo at full resolution (capped at 3000px).
+    const { w, h } = srcSize(img);
+    const rw = state.rotation % 180 ? h : w;
+    const rh = state.rotation % 180 ? w : h;
+    const cw = Math.max(1, Math.round(r.w * rw));
+    const ch = Math.max(1, Math.round(r.h * rh));
+    const s = Math.min(1, 3000 / Math.max(cw, ch));
+    const out = document.createElement('canvas');
+    out.width = Math.max(1, Math.round(cw * s));
+    out.height = Math.max(1, Math.round(ch * s));
+    const ctx = out.getContext('2d');
+    ctx.imageSmoothingQuality = 'high';
+    ctx.scale(s, s);
+    ctx.translate(-r.x * rw, -r.y * rh);
+    drawRotated(ctx, img, rw, rh);
+    if (typeof img.close === 'function') img.close();
+    return out;
+  });
 }
 
 /* ------------------------------------------------------------------- paste */
@@ -1045,26 +1675,27 @@ function resetAll() {
   const hasData = state.people.length || state.items.length || state.previewUrl;
   if (hasData && !window.confirm('Clear everything and start over?')) return;
   state.scanToken++;
-  dropPreview();
+  hideUndo();
+  dropPhoto();
   state.people = [];
-  state.payerId = null;
+  state.payerIds = new Set();
+  state.pay = new Map();
   state.items = [];
   state.receipt = { subtotalCents: null, totalCents: null };
-  state.gratuityFromReceipt = false;
-  for (const id of ['tax', 'fee', 'tip-amt', 'person-name', 'copy-fallback-text']) $(id).value = '';
+  state.discNames = [];
+  for (const id of ['tax', 'fee', 'disc', 'tip-amt', 'tip-total', 'person-name', 'copy-fallback-text']) $(id).value = '';
   $('tip-pct').value = '20';
   $('receipt-note').textContent = '';
   $('paste-note').textContent = '';
   $('copy-fallback').hidden = true;
   showFees(false);
+  showDisc(false);
   setPasteOpen(false);
   syncTipPresets();
-  setTipMode('percent');
+  resetTip();
   showError('');
   showReceiptState('empty');
-  renderPeople();
-  renderItems();
-  renderResults();
+  renderAll();
   window.scrollTo({ top: 0 });
 }
 
@@ -1073,7 +1704,7 @@ function resetAll() {
 function onPick(e) {
   const input = e.target;
   const file = input.files && input.files[0];
-  input.value = ''; // let go of the file reference right away
+  input.value = ''; // let go of the input's reference right away
   scan(file);
 }
 
@@ -1081,24 +1712,39 @@ $('photo').addEventListener('change', onPick);
 $('photo-again').addEventListener('change', onPick);
 $('photo-remove').addEventListener('click', () => {
   state.scanToken++;
-  dropPreview();
+  dropPhoto();
   $('receipt-note').textContent = '';
+  showError('');
   showReceiptState('empty');
 });
+$('crop-open').addEventListener('click', openCrop);
+$('crop-cancel').addEventListener('click', closeCrop);
+$('crop-rotate').addEventListener('click', rotateCrop);
+$('crop-read').addEventListener('click', readCrop);
+$('crop-stage').addEventListener('pointerdown', onCropPointerDown);
+$('crop-stage').addEventListener('pointermove', onCropPointerMove);
+$('crop-stage').addEventListener('pointerup', onCropPointerUp);
+$('crop-stage').addEventListener('pointercancel', onCropPointerUp);
+document.querySelectorAll('#crop-box .handle').forEach((h) => h.addEventListener('keydown', onHandleKey));
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('crop').hidden) closeCrop(); });
+window.addEventListener('resize', () => { if (!$('crop').hidden && crop.img) drawCrop(); });
+
 $('manual').addEventListener('click', () => addItem());
 $('item-add').addEventListener('click', () => addItem());
 $('person-add').addEventListener('click', addPerson);
 $('person-name').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') { e.preventDefault(); addPerson(); }
 });
-for (const id of ['tax', 'fee']) {
-  $(id).addEventListener('input', renderResults);
+for (const id of ['tax', 'fee', 'disc', 'tip-total']) {
+  $(id).addEventListener('input', () => { renderPayerCalcs(); renderResults(); });
   $(id).addEventListener('blur', () => {
     const c = parseMoney($(id).value);
-    if (c !== null && c >= 0) $(id).value = centsToInput(c);
+    if (c !== null) $(id).value = centsToInput(Math.abs(c));
   });
 }
 $('fee-show').addEventListener('click', () => { showFees(true); $('fee').focus(); });
+$('disc-show').addEventListener('click', () => { showDisc(true); $('disc').focus(); });
+$('disc-to-row').addEventListener('click', discountToRow);
 $('tip-amt').addEventListener('input', () => {
   // A tip typed by hand is no longer the receipt's gratuity.
   if (state.gratuityFromReceipt) { state.gratuityFromReceipt = false; renderTipNote(); }
@@ -1115,6 +1761,7 @@ document.querySelectorAll('#tip-presets .chip').forEach((b) => {
 document.querySelectorAll('input[name="tip-mode"]').forEach((r) => {
   r.addEventListener('change', () => setTipMode(r.value));
 });
+$('undo-btn').addEventListener('click', undo);
 $('reset').addEventListener('click', resetAll);
 $('paste-toggle').addEventListener('click', () => { $('paste-note').textContent = ''; setPasteOpen(true); });
 $('paste-cancel').addEventListener('click', () => setPasteOpen(false));
@@ -1124,6 +1771,4 @@ $('copy-fallback-close').addEventListener('click', () => {
   $('copy-fallback-text').value = '';
 });
 
-renderPeople();
-renderItems();
-renderResults();
+renderAll();
