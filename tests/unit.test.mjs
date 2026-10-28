@@ -1,10 +1,10 @@
 // Run with: node tests/unit.test.mjs
 import assert from 'node:assert/strict';
 import {
-  parseMoney, parsePercent, splitEven, allocateProportional, allocateShares, computeSplit, formatMoney,
+  parseMoney, parsePercent, splitEven, allocateProportional, allocateShares, computeSplit, formatMoney, settleUp,
 } from '../js/split.js';
 import {
-  parseReceiptText, parseLines, textFromWords, bestParse, pairColumns, fixWord, fixSpelling,
+  parseReceiptText, parseLines, textFromWords, bestParse, pairColumns, fixWord, fixSpelling, isTipGuide,
 } from '../js/parse.js';
 
 let passed = 0;
@@ -71,6 +71,50 @@ test('split with shares, add-ons and fees', () => {
   assert.equal(f.grandTotal, 1301);
 });
 
+test('whole-bill discount, tax after discounts, tip before (the mockup bill)', () => {
+  const people = [{ id: 'a', name: 'Ana' }, { id: 'b', name: 'Ben' }, { id: 'c', name: 'Cy' }, { id: 'd', name: 'Dee' }];
+  const m = (o) => new Map(Object.entries(o));
+  const its = [
+    { name: 'Chicken Udon', cents: 1495, assigned: m({ a: 1 }) }, { name: 'Boiled Egg', cents: 200, addon: true, assigned: m({ a: 1 }) },
+    { name: 'Bento Box', cents: 1895, assigned: m({ b: 1 }) }, { name: 'Black Garlic Ramen', cents: 1645, assigned: m({ c: 1 }) },
+    { name: 'Tobiko Nigiri', cents: 375, assigned: m({ d: 1 }) }, { name: 'Chicken Katsu Udon', cents: 1595, assigned: m({ d: 1 }) },
+    { name: 'Boiled Egg', cents: 200, addon: true, assigned: m({ d: 1 }) }, { name: 'Chu-toro Nigiri', cents: 625, assigned: m({ c: 1 }) },
+    { name: 'Double Hamachi Roll', cents: 1895, assigned: m({ a: 3, b: 2 }) },
+  ];
+  const r = computeSplit({ people, items: its, taxCents: 868, tipCents: 1900, discountCents: 1000 });
+  assert.deepEqual(r.rows.map((x) => x.discount), [-285, -267, -229, -219]);
+  assert.deepEqual(r.rows.map((x) => x.total), [3337, 3126, 2674, 2556]);
+  assert.equal(r.grandTotal, 11693);
+  // settle-up for Ana $72.00 and Ben $44.93 on their cards
+  const paid = { a: 7200, b: 4493 };
+  const t = settleUp(r.rows.map((x) => ({ id: x.id, cents: (paid[x.id] || 0) - x.total })));
+  assert.deepEqual(t, [{ from: 'c', to: 'a', cents: 2674 }, { from: 'd', to: 'a', cents: 1189 }, { from: 'd', to: 'b', cents: 1367 }]);
+});
+
+test('item discount lowers tax share but not tip share', () => {
+  const people = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }];
+  const m = (o) => new Map(Object.entries(o));
+  const r = computeSplit({ people, items: [
+    { name: 'Steak', cents: 3000, assigned: m({ a: 1 }) }, { name: 'Steak', cents: 3000, assigned: m({ b: 1 }) },
+    { name: 'BOGO', cents: -3000, assigned: m({ b: 1 }) },
+  ], taxCents: 300, tipCents: 1200 });
+  assert.deepEqual(r.rows.map((x) => x.tax), [300, 0]);
+  assert.deepEqual(r.rows.map((x) => x.tip), [600, 600]);
+});
+
+test('settle-up always squares everyone', () => {
+  for (let t = 0; t < 3000; t++) {
+    const n = 2 + Math.floor(Math.random() * 8);
+    const bal = Array.from({ length: n - 1 }, (_, i) => ({ id: 'p' + i, cents: Math.floor(Math.random() * 8000) - 4000 }));
+    bal.push({ id: 'last', cents: -bal.reduce((s, b) => s + b.cents, 0) });
+    const left = Object.fromEntries(bal.map((b) => [b.id, b.cents]));
+    const pays = settleUp(bal);
+    for (const p of pays) { left[p.from] += p.cents; left[p.to] -= p.cents; assert.ok(p.cents > 0); }
+    assert.ok(Object.values(left).every((v) => v === 0));
+    assert.ok(pays.length <= n - 1);
+  }
+});
+
 test('fuzz: every split sums to the grand total', () => {
   for (let t = 0; t < 2000; t++) {
     const ppl = Array.from({ length: 1 + Math.floor(Math.random() * 7) }, (_, i) => ({ id: 'p' + i, name: 'P' + i }));
@@ -79,7 +123,7 @@ test('fuzz: every split sums to the grand total', () => {
       ppl.forEach((p) => { if (Math.random() < 0.5) assigned.set(p.id, 1 + Math.floor(Math.random() * 9)); });
       return { name: 'i' + i, cents: Math.floor(Math.random() * 5000) - (Math.random() < 0.1 ? 6000 : 0), assigned };
     });
-    const res = computeSplit({ people: ppl, items: its, taxCents: Math.floor(Math.random() * 3000), tipCents: Math.floor(Math.random() * 5000), feeCents: Math.floor(Math.random() * 900) });
+    const res = computeSplit({ people: ppl, items: its, taxCents: Math.floor(Math.random() * 3000), tipCents: Math.floor(Math.random() * 5000), feeCents: Math.floor(Math.random() * 900), discountCents: Math.floor(Math.random() * 1500) });
     assert.equal(res.rows.reduce((s, x) => s + x.total, 0), res.grandTotal);
   }
 });
@@ -206,7 +250,7 @@ Soup                    6.00`);
     ['Add Bacon', 200, true, 0],
     ['Burger', 1400, false, null],
     ['w/ Sweet Potato Fries', 300, true, 3],
-    ['Boiled Egg', 400, false, null], // no add-on signal in plain text: still the right money
+    ['2 Boiled Egg', 400, false, null], // no add-on signal in plain text: right money; number kept, "Split into 2?" offered
     ['Soup', 600, false, null],
   ]);
 });
@@ -217,8 +261,8 @@ test('add-on with a quantity and a symbol', () => {
   assert.deepEqual(r.items.map((i) => [i.name, i.cents, i.addon, i.qty]), [['Ramen', 1500, false, 1], ['Boiled Egg', 400, true, 2]]);
 });
 
-// 7. Discounts, before and after the subtotal.
-test('discounts', () => {
+// 7. Discounts: recognized only by a negative amount.
+test('discounts under a dish attach to it; others come in as rows', () => {
   const r = parseReceiptText(`Margarita              12.00
 Happy Hour             -2.00
 Nachos                 11.00
@@ -229,7 +273,32 @@ Subtotal               16.00
 Loyalty Reward         -1.00
 Tax                     1.40
 Total                  16.40`);
-  assert.deepEqual(items(r), [['Margarita', 1200], ['Happy Hour', -200], ['Nachos', 1100], ['Coupon', -500], ['Pie', 600], ['Comp Dessert', -600], ['Loyalty Reward', -100]]);
+  assert.deepEqual(r.items.map((i) => [i.name, i.cents, i.addon, i.parent, i.discount]), [
+    ['Margarita', 1200, false, null, false],
+    ['Happy Hour', -200, true, 0, false], // right under the margarita
+    ['Nachos', 1100, false, null, false],
+    ['Coupon', -500, false, null, true], // "coupon" is about the bill: you decide
+    ['Pie', 600, false, null, false],
+    ['Comp Dessert', -600, true, 4, false],
+    ['Loyalty Reward', -100, false, null, true], // after the subtotal
+  ]);
+});
+
+test('discount words in dish names do not make discounts', () => {
+  const r = parseReceiptText(`Happy Hour Wings 8.00
+Kick Off Burger 12.00
+Off The Hook Tacos 14.00
+Discount Dumplings 9.00
+Comp Salad 7.00
+Coupon 5.00`);
+  assert.deepEqual(items(r), [['Happy Hour Wings', 800], ['Kick Off Burger', 1200], ['Off The Hook Tacos', 1400], ['Discount Dumplings', 900], ['Comp Salad', 700], ['Coupon', 500]]);
+});
+
+test('percent-off line under a dish is still a bill discount row', () => {
+  const r = parseReceiptText(`Ramen 15.00
+10% Off Order -1.50`);
+  assert.equal(r.items[1].discount, true);
+  assert.equal(r.items[1].addon, false);
 });
 
 // 8. Voided lines.
@@ -292,9 +361,10 @@ Tip 15%: 3.27
 Tip 20%: 4.36`);
   assert.equal(b.tipCents, null);
   const c = parseReceiptText(`Pasta 20.00
+Tax 1.80
 Tip (20%) 4.00
 Total 25.80`);
-  assert.equal(c.tipCents, 400); // one tip line that was actually added
+  assert.equal(c.tipCents, 400); // one tip line, and the total proves it was charged
 });
 
 // 13. European receipt with VAT already included and decimal commas.
@@ -355,7 +425,8 @@ Sales Tax
 3.93
 Thank you!`;
   const r = bestParse(lens, pairColumns(lens));
-  assert.deepEqual(items(r), [['Margherita Pizza', 2800], ['Caesar Salad', 1250], ['Iced Tea', 375]]);
+  assert.deepEqual(items(r), [['2 Margherita Pizza', 2800], ['Caesar Salad', 1250], ['Iced Tea', 375]]);
+  assert.equal(r.items[0].qtyGuess, true);
   assert.equal(r.subtotalCents, 4425); assert.equal(r.taxCents, 393);
   assert.equal(pairColumns('Iced Tea 3.75\nFries 9.00'), 'Iced Tea 3.75\nFries 9.00');
 });
@@ -369,6 +440,51 @@ Total 15.22
 Join our rewards 5.00 off
 Gift cards available 25.00`);
   assert.deepEqual(items(r), [['Pho', 1400]]);
+});
+
+// 20. Printed tips only count when they were really charged.
+test('a printed tip is ignored unless the total proves it', () => {
+  const suggestion = parseReceiptText(`Pasta 20.00
+Tax 1.80
+Total 21.80
+Tip 20% 4.00`);
+  assert.equal(suggestion.tipCents, null);
+  const charged = parseReceiptText(`Pasta 20.00
+Tax 1.80
+Tip 4.00
+Total 25.80`);
+  assert.equal(charged.tipCents, 400);
+  const service = parseReceiptText(`Pasta 20.00
+Service Charge 20% 4.00
+Total 21.00`);
+  assert.equal(service.tipCents, 400); // charged by the restaurant, always counts
+  assert.equal(service.gratuity, true);
+});
+
+// 21. Leading numbers: quantity, or part of the name?
+test('leading numbers stay in names unless the receipt prints quantities', () => {
+  const noQty = parseReceiptText(`7 Layer Dip 9.00
+3 Cheese Pizza 16.00
+Pho 14.00
+Iced Tea 3.00`);
+  assert.deepEqual(noQty.items.map((i) => [i.name, i.qty, i.qtyGuess]), [['7 Layer Dip', 7, true], ['3 Cheese Pizza', 3, true], ['Pho', 1, false], ['Iced Tea', 1, false]]);
+  const withQty = parseReceiptText(`1 Pho 14.00
+7 Wings 14.00
+1 Iced Tea 3.00
+1 7 Layer Dip 9.00`);
+  assert.deepEqual(withQty.items.map((i) => [i.name, i.qty, i.qtyGuess]), [['Pho', 1, false], ['Wings', 7, false], ['Iced Tea', 1, false], ['7 Layer Dip', 1, false]]);
+  const explicit = parseReceiptText('7x Wings 14.00\nPho 14.00');
+  assert.deepEqual(explicit.items.map((i) => [i.name, i.qty, i.qtyGuess]), [['Wings', 7, false], ['Pho', 1, false]]);
+});
+
+// 22. The tip-guide rule, line by line.
+test('tip-guide lines vs real lines with a percent', () => {
+  const skip = ['18%', '18%:', '18 %', '(18%)', '18% =', '18%....', 'Suggested Tip 18%:', 'Suggested gratuity 20%', 'Tip Guide 18%', '18% $3.92 Total', '18% Tip $3.92 Total', '15% would be', '15% would be:', 'Tip 20% $4.36 Total', '20.0%', '18% of pre-tax amount', '20% equals'];
+  const keep = ['2% Milk', '100% Agave Margarita', '50% Off Appetizers', '10% Off Order', 'Gratuity 18% (6+)', 'Service Charge 20%', 'Auto Gratuity 18%', 'Kitchen Appreciation 4%', 'Card Surcharge 3%', 'SF Health Mandate 4%', 'Sales Tax 8.875%', 'Tax 9.25%', '1% For The Planet Donation', '70% Dark Chocolate Torte', '99% Fat Free Yogurt', '18% Gratuity Included', '2% Milk Latte', '100% Juice', '50/50 Bar', 'Pinot Noir 2019', '18% Tip', 'Tip 20%', 'Tip (20%)'];
+  for (const l of skip) assert.equal(isTipGuide(l), true, l);
+  for (const l of keep) assert.equal(isTipGuide(l), false, l);
+  const r = parseReceiptText('100% Agave Margarita 14.00\n2% Milk 3.00\nTotal 17.00\n18% 3.06\n20% 3.40');
+  assert.deepEqual(items(r), [['100% Agave Margarita', 1400], ['2% Milk', 300]]);
 });
 
 /* ------------------------------------------------- size-based line joining */
