@@ -1,0 +1,616 @@
+import { parseMoney } from './split.js';
+import { WORDS } from './words.js';
+import { CHARGE_RE } from './charges.js';
+
+/*
+ * Turns receipt text into items, add-ons, tax, tip, fees and totals.
+ *
+ * Input is a list of lines: { text, cap?, xh? }.
+ *   cap = typical capital-letter height of the line's words (pixels)
+ *   xh  = the reader's tilt-corrected lowercase height for the line
+ * Size data only exists for photos. Pasted text has none, and every rule that
+ * needs size simply doesn't fire without it.
+ */
+
+// Price at the end of a line, optionally followed by a tax flag ("T", "F", "TX").
+const PRICE_AT_END =
+  /(\(|-)?\s?\$?\s?(\d{1,3}(?:,\d{3})+[.,]\s?\d{2}|\d{1,6}[.,]\s?\d{2})\)?(-)?(?:\s+[A-Za-z]{1,2})?\s*$/;
+// "$12 50": the reader sometimes turns the decimal point into a space. Only trusted with a $ sign.
+const PRICE_SPACED = /\$\s?(\d{1,6})\s(\d{2})(?:\s+[A-Za-z]{1,2})?\s*$/;
+
+const RE = {
+  subtotal: /\bsub\s*-?\s*total\b|\bsubtl\b|\bsub\s*ttl\b/,
+  total: /\b(grand\s+)?total\b|\bamount(\s+due)?\b|\bbalance(\s+due)?\b|\btotal\s+due\b|\bttl\b/,
+  // Any line with "tax" in it, plus the state and city names in charges.js.
+  tax: new RegExp(`\\btax(es)?\\b|\\bvat\\b|\\bgst\\b|\\bhst\\b|\\bpst\\b|\\biva\\b|${CHARGE_RE.tax.source}`),
+  tip: /\btip\b|\bgratuity\b|\bservice\s+charge\b|\bauto[\s-]?grat/,
+  fee: CHARGE_RE.fee,
+  // Charges for one person's thing (corkage, cake cutting, a split plate): rows to assign, not fees.
+  item: CHARGE_RE.item,
+  // Words that tie a negative amount to the whole bill rather than the dish above it.
+  billDiscount: /\bcoupon\b|\border\b|\bcheck\b|\bbill\b|\bloyalty\b|\breward|\bmember|\bemployee\b|\bvoucher\b|\bgift\b|%/,
+  void: /\bvoid(ed)?\b|\bcancel(l?ed)?\b|\bdeleted\b|\brefund(ed)?\b/,
+  vatIncluded: /\bincl(\.|uded|udes)?\b.*\b(vat|tax|gst|mwst|tva|iva)\b|\b(vat|tax|gst)\b.*\bincl/,
+  skip:
+    /\bchange\b|\bcash\b|\btender(ed)?\b|\bvisa\b|\bmaster\s*card\b|\bamex\b|\bdiscover\b|\bcard\b|\bdebit\b|\bcredit\b|\bpayment\b|\bpaid\b|\bauth\b|\bapproval\b|\brounding\b|\bcheck\s*#|\border\s*#/,
+  cardSlip: /\bvisa\b|\bmaster\s*card\b|\bamex\b|\bdiscover\b|\bauth\b|\bapproval\b|\bsignature\b|\bcontactless\b|\bchip\b/,
+};
+
+const ADDON_SYMBOL = /^[-+*>~•·]\s*(?=\p{L})/u;
+const ADDON_WORD = /^(?:(?:add|added|extra|xtra|sub|substitute|with|side\s+of|no)\b|w\/)/i;
+const QTY_PREFIX = /^(\d{1,2})\s*([xX×])?\s+(?=[\p{L}\-+*>~(]|\d{1,2}\s+\p{L})/u; // also "1 7 Layer Dip"
+const PLAIN_QTY_LINE = /^\d{1,2}\s+\p{L}/u;
+const COL_QTY = /\s(\d{1,2})$/; // a lone number between the name and the price
+const UNIT_LINE = /^\(?\s*(\d{1,2})\s*[@xX×]\s*\$?\s*\)?$/; // "2 @" left after taking the price off "2 @ $12.50"
+const QTY_SUFFIX = /\s+[xX×]\s?(\d{1,2})$/;
+const UNIT_PRICE = /\s*(?:(\d{1,2})\s*)?(?:@|[xX×]\s*\$)\s*\$?\d{1,4}[.,]\d{2}\s*(?:ea\.?|each)?$/i;
+
+// Size comparisons. "Same" is a tight band so only lines that clearly match get joined.
+// cap = word-box height (good on level photos, unreliable once the photo is tilted)
+// xh  = the reader's tilt-corrected lowercase height (good either way)
+const CAP_SAME = [0.9, 1.1];
+const XH_SAME = [0.92, 1.09];
+const CAP_SMALL = 0.82;
+const XH_SMALL = 0.88;
+const XH_SMALL_TILTED = 0.85;
+const TILT = 0.02; // baseline slope beyond which word boxes stop being trustworthy (about 1 degree)
+
+/* --------------------------------------------------------------- spelling */
+
+const AMBIG = new Set(['l', 'i', '1', '|', 'I']);
+
+function applyCase(src, fixed) {
+  // Judge case by the letters the reader is sure about, not the i/l it mixed up.
+  const sure = src.replace(/[lIi1|]/g, '');
+  if (sure && sure === sure.toUpperCase()) return fixed.toUpperCase();
+  if (src[0] === src[0].toUpperCase()) return fixed[0].toUpperCase() + fixed.slice(1);
+  return fixed;
+}
+
+/** Repair i/l mix-ups using the menu word list. Leaves anything it isn't sure about. */
+export function fixWord(word) {
+  const m = word.match(/^([^\p{L}\d|]*)([\p{L}\d|]+)([^\p{L}\d|]*)$/u);
+  if (!m) return word;
+  const [, pre, core, post] = m;
+  if (core.length < 3 || core.length > 16 || !/\p{L}/u.test(core)) return word;
+  if (/\d/.test(core.replace(/1/g, ''))) return word; // real numbers stay put
+  const lower = core.toLowerCase();
+  if (WORDS.has(lower)) return word;
+
+  const spots = [];
+  for (let i = 0; i < core.length; i++) if (AMBIG.has(core[i])) spots.push(i);
+  if (spots.length === 0 || spots.length > 5) return word;
+
+  const chars = lower.split('');
+  for (let mask = 0; mask < 1 << spots.length; mask++) {
+    spots.forEach((pos, k) => { chars[pos] = mask & (1 << k) ? 'i' : 'l'; });
+    const candidate = chars.join('');
+    if (WORDS.has(candidate)) return pre + applyCase(core.replace(/[1|]/g, 'l'), candidate) + post;
+  }
+  return word;
+}
+
+export const fixSpelling = (text) => text.split(' ').map(fixWord).join(' ');
+
+/* ------------------------------------------------------------------ helpers */
+
+function cleanName(raw) {
+  return raw
+    .replace(/[.\-_:·•…]{2,}/g, ' ')
+    .replace(/^[^\p{L}\p{N}(]+|[^\p{L}\p{N})]+$/gu, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+    .slice(0, 60);
+}
+
+/** Split a line into label and price. Returns { label, cents } with cents null when there's no price. */
+function splitPrice(line) {
+  let m = line.match(PRICE_AT_END);
+  if (m) {
+    let cents = parseMoney(m[2].replace(/\s/g, ''));
+    if (cents !== null) {
+      if (m[1] || m[3]) cents = -Math.abs(cents);
+      return { label: line.slice(0, m.index).trim(), cents };
+    }
+  }
+  m = line.match(PRICE_SPACED);
+  if (m) {
+    const cents = parseMoney(`${m[1]}.${m[2]}`);
+    if (cents !== null) return { label: line.slice(0, m.index).trim(), cents };
+  }
+  return { label: line, cents: null };
+}
+
+/**
+ * Pull quantity and unit-price clutter off a label.
+ * A plain leading number ("7 Layer Dip") is only treated as a quantity when the
+ * receipt prints quantities on its lines; otherwise it stays in the name and the
+ * row offers "Split into 7?" instead (qtyGuess).
+ */
+function takeQuantity(label, printsQty = false, colQty = false) {
+  let qty = 1;
+  let s = label;
+  const unit = s.match(UNIT_PRICE);
+  if (unit) {
+    if (unit[1]) qty = Number(unit[1]);
+    s = s.slice(0, unit.index).trim();
+  }
+  const misread = s.match(/^(?:[lI|]|il|li|1l|l1)\s+(?=\p{Lu})/u); // the reader's take on a "1"
+  if (misread) {
+    s = s.slice(misread[0].length);
+    return { qty: 1, qtyGuess: false, rest: s.trim(), hadQty: true };
+  }
+  let qtyGuess = false;
+  const pre = s.match(QTY_PREFIX);
+  if (pre) {
+    qty = Number(pre[1]);
+    const symbolNext = /^[-+*>~•·]/.test(s.slice(pre[0].length)); // "2 -Fried Egg"
+    if (pre[2] || qty === 1 || printsQty || unit || symbolNext) s = s.slice(pre[0].length); // clearly a quantity
+    else qtyGuess = true; // keep "7 Layer Dip" whole
+  }
+  const col = colQty && !pre ? s.match(COL_QTY) : null; // "Burger   2   24.00"
+  if (col && Number(col[1]) >= 1 && Number(col[1]) <= 20) {
+    qty = Number(col[1]);
+    s = s.slice(0, col.index);
+    qtyGuess = false;
+    if (!(qty >= 1 && qty <= 20)) qty = 1;
+    return { qty, qtyGuess: false, rest: s.trim(), hadQty: true };
+  }
+  const suf = s.match(QTY_SUFFIX);
+  if (suf) {
+    qty = Number(suf[1]);
+    s = s.slice(0, suf.index);
+  }
+  if (suf) qtyGuess = false;
+  if (!(qty >= 1 && qty <= 20)) { qty = 1; qtyGuess = false; }
+  return { qty, qtyGuess: qtyGuess && qty > 1, rest: s.trim(), hadQty: Boolean(pre || suf || (unit && unit[1])) };
+}
+
+/*
+ * Tip-guide lines ("18%  4.50", "Suggested gratuity 20%", "18% Tip $3.92 Total $23.92")
+ * versus real lines that happen to contain a percent ("2% Milk", "Sales Tax 8.875%",
+ * "Gratuity 18% (6+)"). Lines that mention a tip go through the tip rules instead.
+ */
+const GUIDE_WORDS = new Set(['tip', 'tips', 'gratuity', 'grat', 'suggested', 'suggestion', 'suggestions', 'guide', 'total', 'totals', 'amount', 'of', 'is', 'would', 'be', 'for', 'on', 'service', 'the', 'pre', 'tax', 'pretax', 'with', 'w', 'your', 'a']);
+const FILLER = new Set(['would', 'be', 'is', 'of', 'on', 'for', 'the', 'with', 'w', 'pre', 'pretax', 'amount', 'your', 'a', 'equals']);
+export function isTipGuide(label) {
+  if (!/\d\s?%/.test(label)) return false;
+  const rest = label
+    .replace(/pre-?\s?tax|before\s+tax/gi, ' ')
+    .replace(/\(?\d{1,2}(\.\d{1,3})?\s?%\)?/g, ' ')
+    .replace(/\(?-?\$?\s?\d{1,6}([.,]\d{2})?\)?/g, ' ')
+    .toLowerCase()
+    .match(/\p{L}+/gu) || [];
+  if (rest.every((w) => FILLER.has(w))) return true;
+  if (rest.includes('suggested') || rest.includes('guide') || rest.includes('total')) return rest.every((w) => GUIDE_WORDS.has(w));
+  return false;
+}
+
+const ratio = (a, b) => (a && b ? a / b : null);
+const within = (r, [lo, hi]) => r !== null && r >= lo && r <= hi;
+
+/** Page tilt from the longer lines; short lines give noisy angles. */
+function pageTilt(lines) {
+  const slopes = lines
+    .filter((l) => typeof l.slope === 'number' && String(l.text || '').length >= 12)
+    .map((l) => l.slope)
+    .sort((a, b) => a - b);
+  return slopes.length ? slopes[Math.floor(slopes.length / 2)] : 0;
+}
+
+/* ----------------------------------------------------- keyword tolerance */
+
+function editDistance(a, b) {
+  if (Math.abs(a.length - b.length) > 2) return 3;
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...new Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+  }
+  return d[a.length][b.length];
+}
+
+/**
+ * The label used to recognize Subtotal and Total, forgiving a misread letter or two
+ * ("Sudtotal", "Subtota1", "Tota1"). Only used for recognizing those words, never for names.
+ */
+export function keyFor(label) {
+  return label.toLowerCase().replace(/[\p{L}\d|]+/gu, (w) => {
+    const word = w.replace(/[1|]/g, 'l').replace(/0/g, 'o').replace(/[^a-z]/g, '');
+    if (word.length >= 6 && word.length <= 10 && editDistance(word, 'subtotal') <= 2) return 'subtotal';
+    if (word.length >= 4 && word.length <= 6 && editDistance(word, 'total') <= 1) return 'total';
+    return w;
+  });
+}
+
+/**
+ * A name on one line with its price alone on the next ("Staff Wellness Fee" /
+ * "(4.00%) $2.32") becomes one line. The second line may hold only a price and/or a percent.
+ */
+function mergeWrappedPrices(lines) {
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const cur = lines[i];
+    const next = lines[i + 1];
+    const curText = String(cur.text ?? '').replace(/\s+/g, ' ').trim();
+    if (next && /\p{L}{2,}/u.test(curText) && splitPrice(curText).cents === null) {
+      const n = splitPrice(String(next.text ?? '').replace(/\s+/g, ' ').trim());
+      const leftover = n.label.replace(/\(?\d{1,3}([.,]\d{1,3})?\s?%\)?/g, '').replace(/[\s()$:.,\-–—|]/g, '');
+      if (n.cents !== null && leftover === '') {
+        out.push({ ...cur, text: `${curText} ${String(next.text).trim()}` });
+        i++;
+        continue;
+      }
+    }
+    out.push(cur);
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------- parser */
+
+/**
+ * Parse receipt lines.
+ * Returns {
+ *   items: [{ name, cents (int|null), qty, qtyGuess, addon, parent (index|null), joined ({ base, extra }|null), discount }],
+ *   taxCents, tipCents, feeCents, subtotalCents, totalCents, gratuity, cardSlip
+ * } with any figure null when the receipt didn't show it.
+ */
+export function parseLines(input) {
+  const out = {
+    items: [], taxCents: null, tipCents: null, feeCents: null,
+    subtotalCents: null, totalCents: null, gratuity: false, cardSlip: false, feeInSubtotal: 0,
+  };
+  if (!Array.isArray(input)) return out;
+
+  let itemsStarted = false;
+  let footer = false; // after the subtotal/total, only charges and totals count
+  let lastItem = -1; // index into out.items of the last real (non add-on) item
+  let lastItemLine = null; // its size data
+  let prevWasLastItem = false; // was the line just before this one that item?
+  let tipLines = 0;
+  let paymentWords = false;
+  let inDishBlock = false; // the last priced line belonged to a dish (the dish or one of its add-ons)
+  let subtotals = 0; // how many subtotal lines so far ("Subtotal before discounts", then "Subtotal")
+  let feeBefore = 0; // fees printed above the subtotal (so already inside it)
+  const unlabeled = []; // priced lines below the subtotal that weren't recognized (maybe a misread "Tax")
+  const lines = mergeWrappedPrices(input.slice(0, 400));
+  const tilt = Math.abs(pageTilt(lines)) > TILT;
+
+  // Does this receipt print a quantity on its lines? ("1 Pad Thai", "2 Pizza"...)
+  let plain = 0;
+  let priced = 0;
+  let trailing = 0;
+  for (const raw of lines) {
+    const { label, cents } = splitPrice(String(raw.text ?? '').replace(/\s+/g, ' ').trim());
+    if (cents === null || cents <= 0 || !/\p{L}{2,}/u.test(label)) continue;
+    const k = keyFor(label);
+    if (RE.item.test(k)) { priced++; continue; }
+    if (RE.subtotal.test(k) || RE.tax.test(k) || RE.tip.test(k) || RE.fee.test(k) || RE.total.test(k) || RE.skip.test(k)) continue;
+    if (ADDON_SYMBOL.test(label) || ADDON_WORD.test(label)) continue;
+    priced++;
+    if (PLAIN_QTY_LINE.test(label) || /^\d{1,2}\s*[xX×]\s/.test(label) || QTY_SUFFIX.test(label)) plain++;
+    const t = label.match(COL_QTY);
+    if (t && Number(t[1]) >= 1 && Number(t[1]) <= 20 && !PLAIN_QTY_LINE.test(label)) trailing++;
+  }
+  // Most dish lines start with a number -> that number is a quantity column.
+  const printsQty = plain >= 2 && plain * 4 >= priced * 3;
+  // Most dish lines end with a small number before the price -> a quantity column in the middle.
+  const colQty = !printsQty && trailing >= 2 && trailing * 4 >= priced * 3;
+  const runningSum = () => out.items.reduce((s, i) => s + (i.afterSubtotal ? 0 : i.cents ?? 0), 0);
+  const push = (o) => out.items.push({ qty: 1, qtyGuess: false, addon: false, parent: null, joined: null, discount: false, afterSubtotal: false, ...o });
+
+  for (const raw of lines) {
+    const line = fixSpelling(String(raw.text ?? '').replace(/\s+/g, ' ').replace(/^\|+\s*/, '').trim());
+    const wasAfterItem = prevWasLastItem;
+    prevWasLastItem = false;
+    if (line.length < 2) continue;
+
+    const { label: rawLabel, cents } = splitPrice(line);
+    const key = keyFor(rawLabel);
+    if (RE.cardSlip.test(key)) paymentWords = true;
+
+    // Things that are never items, priced or not.
+    if (RE.void.test(key) || RE.vatIncluded.test(key)) continue;
+    if (/\bsuggest/.test(key) || isTipGuide(rawLabel)) continue;
+
+    if (cents !== null && cents > 0 && RE.item.test(key)) {
+      push({ name: cleanName(rawLabel), cents, afterSubtotal: footer });
+      inDishBlock = false;
+      continue;
+    }
+
+    if (cents !== null) {
+      if (RE.subtotal.test(key)) { out.subtotalCents = cents; footer = true; subtotals++; continue; }
+      if (RE.tax.test(key)) { out.taxCents = (out.taxCents ?? 0) + cents; inDishBlock = false; continue; }
+      if (RE.tip.test(key)) {
+        out.tipCents = (out.tipCents ?? 0) + cents;
+        tipLines += 1;
+        if (/gratuity|service|auto/.test(key)) out.gratuity = true;
+        continue;
+      }
+      if (RE.fee.test(key)) {
+        out.feeCents = (out.feeCents ?? 0) + cents;
+        if (!footer) feeBefore += cents;
+        inDishBlock = false;
+        continue;
+      }
+      if (RE.total.test(key)) {
+        if (out.totalCents === null || cents > out.totalCents) out.totalCents = cents;
+        footer = true;
+        continue;
+      }
+      if (RE.skip.test(key)) continue;
+    }
+
+    // "2 @ $12.50" on the line under a dish: that dish's quantity, if the math checks out.
+    const unit = cents !== null && cents > 0 ? rawLabel.trim().match(UNIT_LINE) : null;
+    if (unit) {
+      const target = out.items[lastItem];
+      const n = Number(unit[1]);
+      if (target && !footer && n >= 1 && n <= 20 && target.cents === n * cents) {
+        if (target.qtyGuess && target.name.startsWith(`${n} `)) target.name = target.name.slice(String(n).length + 1);
+        target.qty = n;
+        target.qtyGuess = false;
+      }
+      continue; // never an item of its own
+    }
+
+    // Math backstop: a misread "Subtotal" or "Total" still can't become an item.
+    if (cents !== null && cents > 0 && out.items.length >= 2) {
+      const sum = runningSum();
+      const fee = out.feeCents ?? 0;
+      const base = out.subtotalCents ?? sum + fee;
+      if (out.taxCents !== null && (cents === base + out.taxCents || cents === base + out.taxCents + (out.tipCents ?? 0))) {
+        if (out.totalCents === null || cents > out.totalCents) out.totalCents = cents;
+        footer = true;
+        continue;
+      }
+      if (!footer && (cents === sum || (fee && cents === sum + fee))) {
+        out.subtotalCents = cents;
+        footer = true;
+        subtotals++;
+        continue;
+      }
+    }
+
+    const { qty, qtyGuess, rest, hadQty } = takeQuantity(rawLabel, printsQty, colQty);
+    const symbol = ADDON_SYMBOL.test(rest);
+    const name = cleanName(rest.replace(ADDON_SYMBOL, ''));
+    if (!/\p{L}{2,}/u.test(name)) continue;
+
+    const capR = tilt ? null : ratio(raw.cap, lastItemLine?.cap);
+    const xhR = ratio(raw.xh, lastItemLine?.xh);
+    const clearlySmaller = xhR !== null && (tilt ? xhR <= XH_SMALL_TILTED : capR !== null && capR <= CAP_SMALL && xhR <= XH_SMALL);
+    // Joining needs the tilt-proof measure to match, plus the word-box measure when the photo is level.
+    const sameSize = within(xhR, XH_SAME) && (tilt || within(capR, CAP_SAME));
+
+    if (cents !== null) {
+      // Discounts are recognized by a negative amount only. A dish called "Happy Hour Wings" stays a dish.
+      if (cents < 0) {
+        const forBill = footer || RE.billDiscount.test(key);
+        if (!forBill && inDishBlock && lastItem !== -1) {
+          push({ name, cents, addon: true, parent: lastItem }); // printed right under its dish
+        } else {
+          push({ name, cents, discount: true, afterSubtotal: footer, seen: subtotals }); // you decide: who it was for, or the whole bill
+          inDishBlock = false;
+        }
+        continue;
+      }
+      if (footer) { unlabeled.push(cents); continue; } // anything else priced below the subtotal isn't food
+
+      const isAddon = lastItem !== -1 && (symbol || ADDON_WORD.test(rest) || clearlySmaller);
+      if (isAddon) {
+        if (cents === 0) continue; // a free modifier is a cooking note, not a charge
+        push({ name, cents, qty, addon: true, parent: lastItem });
+        inDishBlock = true;
+        continue;
+      }
+
+      itemsStarted = true;
+      push({ name, cents, qty, qtyGuess });
+      inDishBlock = true;
+      lastItem = out.items.length - 1;
+      lastItemLine = raw;
+      prevWasLastItem = true;
+      continue;
+    }
+
+    // ---- lines without a price ----
+    if (!itemsStarted || footer) continue;
+    if (symbol || ADDON_WORD.test(rest)) continue; // unpriced modifier: cooking note
+
+    // A quantity up front means a new item whose price the reader lost.
+    // If sizes are known it has to be dish-sized; a smaller "3 Pcs Corn Tortilla" is a description.
+    if (hadQty && (xhR === null || xhR >= XH_SAME[0]) && !clearlySmaller) {
+      push({ name, cents: null, qty, qtyGuess });
+      inDishBlock = true;
+      lastItem = out.items.length - 1;
+      lastItemLine = raw;
+      prevWasLastItem = true;
+      continue;
+    }
+
+    // Second line of a long dish name: right after its dish, same text size by both measures.
+    const target = out.items[lastItem];
+    // On receipts printed in one font size, an indented line is a description, not a wrapped name.
+    const indented = raw.nameX != null && lastItemLine?.nameX != null
+      && raw.nameX - lastItemLine.nameX > 0.5 * (lastItemLine.xh || raw.xh || 20);
+    if (wasAfterItem && target && !target.joined && !hadQty && !indented && name.length <= 30 && sameSize) {
+      target.joined = { base: target.name, extra: name };
+      target.name = `${target.name} ${name}`.slice(0, 60);
+      prevWasLastItem = false;
+      continue;
+    }
+    // Anything else without a price is a description, header or footer line.
+  }
+
+  // A discount printed between "Subtotal before discounts" and the final "Subtotal" is part of that subtotal.
+  for (const i of out.items) {
+    if (i.afterSubtotal && i.seen < subtotals) i.afterSubtotal = false;
+    delete i.seen;
+  }
+  const footerDiscounts = out.items.reduce((s, i) => s + (i.afterSubtotal ? i.cents : 0), 0);
+  if (out.subtotalCents !== null && feeBefore) out.feeInSubtotal = feeBefore;
+  const feeAfter = (out.feeCents ?? 0) - out.feeInSubtotal;
+
+  // Math backstop for tax: an unrecognized line worth exactly Total − Subtotal (− fees, − tip) is the tax.
+  if (out.taxCents === null && out.subtotalCents !== null && out.totalCents !== null) {
+    const gap = out.totalCents - out.subtotalCents - footerDiscounts - feeAfter;
+    const hit = unlabeled.find((c) => c > 0 && (c === gap || c === gap - (out.tipCents ?? 0)));
+    if (hit !== undefined) out.taxCents = hit;
+  }
+
+  // Two or more tip lines are a tip guide ("18% ... 20% ..."), not a tip anyone added.
+  if (tipLines >= 2 && !out.gratuity) out.tipCents = null;
+  // Restaurants rarely print a real tip. A plain "Tip" line only counts if the printed
+  // total proves it was charged; gratuity and service charges always count.
+  if (out.tipCents !== null && !out.gratuity) {
+    const food = out.subtotalCents !== null
+      ? out.subtotalCents + footerDiscounts
+      : out.items.reduce((s, i) => s + (i.cents ?? 0), 0);
+    const charged = food + (out.taxCents ?? 0) + feeAfter + out.tipCents;
+    if (out.totalCents === null || out.totalCents !== charged) out.tipCents = null;
+  }
+  if (out.items.length === 0 && paymentWords && (out.totalCents !== null || out.tipCents !== null)) out.cardSlip = true;
+
+  return out;
+}
+
+/** Plain text (pasted, or the reader's flat output) has no size data. */
+export function parseReceiptText(text) {
+  if (typeof text !== 'string') return parseLines([]);
+  return parseLines(text.split(/\r?\n/).map((t) => ({ text: t })));
+}
+
+/* ---------------------------------------------------- reader output helpers */
+
+const NO_CAP = /[gjpqy()[\]{},;$]/; // letters and marks that stick out below or above a capital
+
+function capHeight(words) {
+  const hs = words
+    .filter((w) => /\p{L}{2,}/u.test(w.text) && !/\d/.test(w.text) && !NO_CAP.test(w.text) && /[A-Zbdfhiklt]/.test(w.text))
+    .map((w) => w.bbox.y1 - w.bbox.y0)
+    .sort((a, b) => a - b);
+  if (!hs.length) return null;
+  return hs[Math.floor(hs.length / 2)];
+}
+
+/** Lines as the reader saw them, with size data for each. */
+export function linesFromBlocks(blocks) {
+  const out = [];
+  for (const b of blocks || []) for (const p of b.paragraphs || []) for (const l of p.lines || []) {
+    const words = (l.words || []).filter((w) => w && w.bbox && typeof w.text === 'string');
+    const ra = l.rowAttributes || {};
+    const xh = ra.rowHeight && ra.ascenders !== undefined && ra.descenders !== undefined
+      ? ra.rowHeight - ra.ascenders - ra.descenders
+      : null;
+    const bl = l.baseline;
+    const slope = bl && bl.x1 > bl.x0 ? (bl.y1 - bl.y0) / (bl.x1 - bl.x0) : 0;
+    out.push({
+      text: words.map((w) => w.text.trim()).filter(Boolean).join(' ') || String(l.text || '').trim(),
+      cap: capHeight(words), xh: xh > 0 ? xh : null, slope,
+      nameX: words.find((w) => /\p{L}/u.test(w.text))?.bbox.x0 ?? null, // where the name starts (after any quantity)
+    });
+  }
+  return out;
+}
+
+/** Pull every word out of the reader's nested block output. */
+export function wordsFromBlocks(blocks) {
+  const out = [];
+  for (const b of blocks || []) for (const p of b.paragraphs || []) for (const l of p.lines || []) for (const w of l.words || []) out.push(w);
+  return out;
+}
+
+/**
+ * Rebuild text rows from word boxes. The reader sometimes reads a receipt as two
+ * columns (all the names, then all the prices). Grouping words by height on the
+ * page puts each price back on its item's line.
+ */
+export function textFromWords(words) {
+  const ws = (words || [])
+    .filter((w) => w && typeof w.text === 'string' && w.text.trim() && w.bbox)
+    .map((w) => ({ text: w.text.trim(), x: w.bbox.x0, yc: (w.bbox.y0 + w.bbox.y1) / 2, h: Math.max(1, w.bbox.y1 - w.bbox.y0) }));
+  if (!ws.length) return '';
+
+  const heights = ws.map((w) => w.h).sort((a, b) => a - b);
+  const tol = heights[Math.floor(heights.length / 2)] * 0.6;
+
+  ws.sort((a, b) => a.yc - b.yc);
+  const rows = [];
+  for (const w of ws) {
+    const row = rows[rows.length - 1];
+    if (row && Math.abs(w.yc - row.yc) <= tol) {
+      row.words.push(w);
+      row.yc = row.words.reduce((s, x) => s + x.yc, 0) / row.words.length;
+    } else {
+      rows.push({ yc: w.yc, words: [w] });
+    }
+  }
+  return rows.map((r) => r.words.sort((a, b) => a.x - b.x).map((w) => w.text).join(' ')).join('\n');
+}
+
+/**
+ * How receipt-like a parse looks. Matching the subtotal beats everything; otherwise a
+ * reading that lands closer to the subtotal beats one that just found more numbers.
+ */
+export function scoreParse(r) {
+  const priced = r.items.filter((i) => i.cents !== null);
+  const sum = priced.reduce((s, i) => s + (i.afterSubtotal ? 0 : i.cents), 0) + (r.feeCents ?? 0);
+  const base = priced.length * 10 - (r.items.length - priced.length) * 3;
+  if (r.subtotalCents === null) return base;
+  const sumNoFee = sum - (r.feeCents ?? 0);
+  if ((sum === r.subtotalCents || sumNoFee === r.subtotalCents) && priced.length === r.items.length) return 10000 + base;
+  const off = Math.min(Math.abs(r.subtotalCents - sum), Math.abs(r.subtotalCents - sumNoFee));
+  return base - Math.min(4000, Math.round(off / 10));
+}
+
+/** Parse several readings (strings or line lists) and keep the one that looks most like the receipt. */
+export function bestParse(...inputs) {
+  return inputs
+    .map((x) => (typeof x === 'string' ? parseReceiptText(x) : parseLines(x)))
+    .reduce((best, r) => (scoreParse(r) > scoreParse(best) ? r : best));
+}
+
+/* ------------------------------------------------------------------- paste */
+
+const PRICE_ONLY = /^[-(]?\s?\$?\s?\d{1,6}[.,]\s?\d{2}\)?(?:\s+[A-Za-z]{1,2})?$/;
+
+/**
+ * Copied text (e.g. from Google Lens) often comes out as a block of item names
+ * followed by a block of prices. Re-pair them line by line. When there are more
+ * names than prices, the extras are assumed to be header lines at the top.
+ */
+export function pairColumns(text) {
+  if (typeof text !== 'string') return '';
+  const lines = text.split(/\r?\n/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const isPrice = (l) => PRICE_ONLY.test(l);
+  const isLabel = (l) => !isPrice(l) && /\p{L}{2,}/u.test(l) && !PRICE_AT_END.test(l);
+
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (!isLabel(lines[i])) { out.push(lines[i]); i++; continue; }
+
+    let j = i;
+    while (j < lines.length && isLabel(lines[j])) j++;
+    let k = j;
+    while (k < lines.length && isPrice(lines[k])) k++;
+
+    const labels = lines.slice(i, j);
+    const prices = lines.slice(j, k);
+    if (prices.length > 0 && labels.length >= prices.length) {
+      const extra = labels.length - prices.length;
+      out.push(...labels.slice(0, extra));
+      prices.forEach((p, n) => out.push(`${labels[extra + n]} ${p}`));
+      i = k;
+    } else {
+      out.push(...labels);
+      i = j;
+    }
+  }
+  return out.join('\n');
+}

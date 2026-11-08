@@ -1,0 +1,3 @@
+eng.traineddata.gz comes from the npm package @tesseract.js-data/eng@1.0.0 (4.0.0_best_int),
+published under the MIT license. The underlying model is from the Tesseract OCR project
+(https://github.com/tesseract-ocr/tessdata_best), Apache-2.0.
