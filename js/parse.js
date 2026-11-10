@@ -27,6 +27,8 @@ const RE = {
   fee: CHARGE_RE.fee,
   // Charges for one person's thing (corkage, cake cutting, a split plate): rows to assign, not fees.
   item: CHARGE_RE.item,
+  // Flat per-order charges (delivery, small order) that are fairer split evenly.
+  even: CHARGE_RE.even,
   // Words that tie a negative amount to the whole bill rather than the dish above it.
   billDiscount: /\bcoupon\b|\border\b|\bcheck\b|\bbill\b|\bloyalty\b|\breward|\bmember|\bemployee\b|\bvoucher\b|\bgift\b|%/,
   void: /\bvoid(ed)?\b|\bcancel(l?ed)?\b|\bdeleted\b|\brefund(ed)?\b/,
@@ -101,6 +103,12 @@ function cleanName(raw) {
     .replace(/\s{2,}/g, ' ')
     .trim()
     .slice(0, 60);
+}
+
+/** A tax or fee line's name, without its percentage or leftover punctuation. */
+function chargeName(raw, fallback) {
+  const name = cleanName(raw.replace(/\(?\s*\d+(\.\d+)?\s*%\s*\)?/g, ' '));
+  return name ? fixSpelling(name) : fallback;
 }
 
 /** Split a line into label and price. Returns { label, cents } with cents null when there's no price. */
@@ -255,13 +263,15 @@ function mergeWrappedPrices(lines) {
  * Parse receipt lines.
  * Returns {
  *   items: [{ name, cents (int|null), qty, qtyGuess, addon, parent (index|null), joined ({ base, extra }|null), discount }],
- *   taxCents, tipCents, feeCents, subtotalCents, totalCents, gratuity, cardSlip
+ *   taxCents, tipCents, feeCents, subtotalCents, totalCents, gratuity, cardSlip,
+ *   taxes: [{ name, cents }], fees: [{ name, cents, inSubtotal, even }]
  * } with any figure null when the receipt didn't show it.
  */
 export function parseLines(input) {
   const out = {
     items: [], taxCents: null, tipCents: null, feeCents: null,
     subtotalCents: null, totalCents: null, gratuity: false, cardSlip: false, feeInSubtotal: 0,
+    taxes: [], fees: [],
   };
   if (!Array.isArray(input)) return out;
 
@@ -324,7 +334,12 @@ export function parseLines(input) {
 
     if (cents !== null) {
       if (RE.subtotal.test(key)) { out.subtotalCents = cents; footer = true; subtotals++; continue; }
-      if (RE.tax.test(key)) { out.taxCents = (out.taxCents ?? 0) + cents; inDishBlock = false; continue; }
+      if (RE.tax.test(key)) {
+        out.taxCents = (out.taxCents ?? 0) + cents;
+        out.taxes.push({ name: chargeName(rawLabel, 'Tax'), cents });
+        inDishBlock = false;
+        continue;
+      }
       if (RE.tip.test(key)) {
         out.tipCents = (out.tipCents ?? 0) + cents;
         tipLines += 1;
@@ -333,6 +348,7 @@ export function parseLines(input) {
       }
       if (RE.fee.test(key)) {
         out.feeCents = (out.feeCents ?? 0) + cents;
+        out.fees.push({ name: chargeName(rawLabel, 'Fee'), cents, inSubtotal: !footer, even: RE.even.test(key) });
         if (!footer) feeBefore += cents;
         inDishBlock = false;
         continue;
@@ -454,13 +470,14 @@ export function parseLines(input) {
   }
   const footerDiscounts = out.items.reduce((s, i) => s + (i.afterSubtotal ? i.cents : 0), 0);
   if (out.subtotalCents !== null && feeBefore) out.feeInSubtotal = feeBefore;
+  if (out.subtotalCents === null) for (const f of out.fees) f.inSubtotal = false;
   const feeAfter = (out.feeCents ?? 0) - out.feeInSubtotal;
 
   // Math backstop for tax: an unrecognized line worth exactly Total − Subtotal (− fees, − tip) is the tax.
   if (out.taxCents === null && out.subtotalCents !== null && out.totalCents !== null) {
     const gap = out.totalCents - out.subtotalCents - footerDiscounts - feeAfter;
     const hit = unlabeled.find((c) => c > 0 && (c === gap || c === gap - (out.tipCents ?? 0)));
-    if (hit !== undefined) out.taxCents = hit;
+    if (hit !== undefined) { out.taxCents = hit; out.taxes.push({ name: 'Tax', cents: hit }); }
   }
 
   // Two or more tip lines are a tip guide ("18% ... 20% ..."), not a tip anyone added.

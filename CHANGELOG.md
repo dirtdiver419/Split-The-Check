@@ -5,6 +5,30 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-11-09
+
+### Added
+
+- Tax and fees are listed line by line, the way the receipt prints them ("Sales Tax", "Delivery Fee", "Service Fee"), each with its own amount and a ✕. **+ Add tax** and **+ Add a fee** add more. Slips and copied text still show one Tax line and one Fees line per person.
+- Each fee can be **Split evenly** or split **By order**. Flat per-order charges (delivery, small order, expanded range, driver benefits) start out split evenly; everything else starts out by order.
+- **Split the tip** evenly or by order. A delivery receipt starts it out even.
+- **Make it a fee** and **Make it tax** in the **Change** menu, for a charge the reader took for a dish. Each tax or fee row has **Make it an item** under **⋯** to send it back.
+- The receipt's subtotal and total are shown under the items with **Edit**, for when the reader got them wrong. The subtotal check uses the corrected number.
+- **Show receipt** in step 3 shows the photo next to the items for checking. It stays in memory only, like before, and goes away with **Remove photo** or when the page closes.
+- **Scan again** reads the same photo again with darker grays. Its Undo stays up until the next tap.
+- Faint quantities: when a receipt adds up but has a lot of light-gray print, the photo is read once more with darker grays, and only quantities (like "2 @ $9.50") are taken from that reading, when the rows and prices match exactly.
+- Driver-benefit and Seattle worker-pay charges are recognized as fees.
+
+### Changed
+
+- Undo now covers every **Change** action, tax and fee changes, subtotal and total edits, and Scan again, not just removals. The message says what happened ("Made Corkage Fee a fee").
+- Undo stays up for 7 seconds instead of 5. It waits while it's touched or focused, while the on-screen keyboard is up, and for anyone moving around with a keyboard, and has a ✕ to close it.
+- Tax and fee rows are laid out like item rows.
+
+### Fixed
+
+- Accessibility: keyboard focus stays on the button you pressed when the list redraws, and moves to the next row after a removal (or back to where you were after Undo). The focus ring is navy with a khaki edge so it shows on both the cream cards and the navy page (WCAG 1.4.11 non-text contrast). The **Change** button's spoken name no longer includes the arrow symbol.
+
 ## [2.2.0] - 2026-11-07
 
 ### Added

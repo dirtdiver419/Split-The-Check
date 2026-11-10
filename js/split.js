@@ -116,6 +116,8 @@ export function allocateShares(amount, weights, offset = 0) {
  * items:  [{ name, cents, addon?, assigned: Map<personId, shares> }]
  *         (negative cents = a discount on one item, assigned like any item)
  * taxCents, tipCents, feeCents: integers (cents)
+ * feeEvenCents: fees split evenly instead of by order (a flat delivery fee)
+ * tipEven: split the tip evenly instead of by order (a delivery driver's tip)
  * discountCents: whole-bill discount as a positive number (a $10 coupon is 1000)
  *
  * Each item is divided by shares (Ana 3, Ben 2 -> 3/5 and 2/5).
@@ -124,8 +126,10 @@ export function allocateShares(amount, weights, offset = 0) {
  *   because restaurants charge tax on the discounted price.
  * - Tip is spread by what each person ordered before discounts, since the
  *   service was the same either way.
+ * - Even fees and an even tip are split equally between everyone who ordered
+ *   something (everyone, if nobody has anything yet).
  */
-export function computeSplit({ people, items, taxCents, tipCents, feeCents = 0, discountCents = 0 }) {
+export function computeSplit({ people, items, taxCents, tipCents, feeCents = 0, feeEvenCents = 0, tipEven = false, discountCents = 0 }) {
   const byId = new Map(
     people.map((p) => [p.id, { id: p.id, name: p.name, lines: [], subtotal: 0, ordered: 0, discount: 0, tax: 0, tip: 0, fee: 0, total: 0 }])
   );
@@ -169,10 +173,19 @@ export function computeSplit({ people, items, taxCents, tipCents, feeCents = 0, 
   const afterDiscounts = rows.map((r) => r.subtotal + r.discount);
   const taxParts = allocateProportional(taxCents, afterDiscounts);
   const feeParts = allocateProportional(feeCents, afterDiscounts);
-  const tipParts = allocateProportional(tipCents, ordered);
+  // Even splits go to everyone who ordered something.
+  const diners = rows.map((r, i) => (r.ordered > 0 ? i : -1)).filter((i) => i >= 0);
+  const evenTo = diners.length ? diners : rows.map((_, i) => i);
+  const evenParts = (amount) => {
+    const out = rows.map(() => 0);
+    splitEven(amount, evenTo.length).forEach((c, k) => { out[evenTo[k]] = c; });
+    return out;
+  };
+  const feeEvenParts = evenParts(feeEvenCents);
+  const tipParts = tipEven ? evenParts(tipCents) : allocateProportional(tipCents, ordered);
   rows.forEach((r, i) => {
     r.tax = taxParts[i];
-    r.fee = feeParts[i];
+    r.fee = feeParts[i] + feeEvenParts[i];
     r.tip = tipParts[i];
     r.total = r.subtotal + r.discount + r.tax + r.fee + r.tip;
   });
@@ -183,9 +196,9 @@ export function computeSplit({ people, items, taxCents, tipCents, feeCents = 0, 
     orderedTotal,
     taxCents,
     tipCents,
-    feeCents,
+    feeCents: feeCents + feeEvenCents,
     discountCents,
-    grandTotal: itemsTotal - discountCents + taxCents + tipCents + feeCents,
+    grandTotal: itemsTotal - discountCents + taxCents + tipCents + feeCents + feeEvenCents,
     unassigned,
   };
 }

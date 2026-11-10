@@ -115,9 +115,10 @@ body {
 .file-btn input {
   position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%;
 }
-.file-btn:focus-within { outline: 3px solid var(--brass); outline-offset: 2px; }
+.file-btn:focus-within { outline: 3px solid var(--booth); outline-offset: 2px; box-shadow: 0 0 0 2px var(--brass); }
 
-:focus-visible { outline: 3px solid var(--brass); outline-offset: 2px; }
+/* Two-tone ring: navy shows on the cream cards, khaki shows on the navy page. */
+:focus-visible { outline: 3px solid var(--booth); outline-offset: 2px; box-shadow: 0 0 0 2px var(--brass); }
 
 input[type="text"] {
   font: inherit; color: var(--ink);
@@ -222,7 +223,7 @@ input[aria-invalid="true"] { border-color: var(--alert); }
 .seg label { position: relative; padding: .5rem 1rem; cursor: pointer; font-weight: 600; color: var(--booth); }
 .seg input { position: absolute; opacity: 0; inset: 0; cursor: pointer; margin: 0; }
 .seg label:has(input:checked) { background: var(--booth); color: var(--paper); }
-.seg label:has(input:focus-visible) { outline: 3px solid var(--brass); outline-offset: -3px; }
+.seg label:has(input:focus-visible) { outline: 3px solid var(--booth); outline-offset: 2px; box-shadow: inset 0 0 0 2px var(--brass); }
 
 /* ---------- results: the receipt slips ---------- */
 
@@ -481,3 +482,34 @@ body.no-scroll { overflow: hidden; }
 .menu-row { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; font-weight: 600; }
 .change-menu .linkish { text-align: left; padding: .2rem 0; justify-self: start; }
 .mini { font-size: .85rem; padding: .3rem .8rem; min-height: 2.2rem; }
+
+/* tax and fee rows */
+.field-label { display: block; font-weight: 700; margin: 0 0 .35rem; }
+.charge-list { list-style: none; margin: 0; padding: 0; display: grid; gap: .5rem; }
+.charge-row { padding: .5rem 0 0; border-top: 1px solid var(--paper-edge); }
+.charge-row:first-child { border-top: 0; padding-top: 0; }
+.charge-top { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: .4rem; align-items: center; }
+.charge-line { display: flex; align-items: center; gap: .5rem; margin-top: .4rem; flex-wrap: wrap; }
+.charge-line .money { width: 7.5rem; max-width: none; }
+.charge-line .money input { text-align: right; }
+.charge-line .chips { margin-top: 0; }
+.more-btn {
+  font: inherit; font-weight: 700; color: var(--ink); background: none; border: 0;
+  min-width: 2.5rem; min-height: 2.5rem; border-radius: 8px; cursor: pointer;
+}
+.more-btn:hover { background: #eceef0; }
+.charge-row .change-menu { margin-top: .4rem; }
+.charge-foot { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem; margin-top: .35rem; }
+.charge-sum { font-size: .9rem; font-weight: 700; }
+.tip-split { margin-top: 1rem; }
+
+/* receipt photo next to the items, and the receipt's own totals */
+.receipt-view { margin: 0 0 .75rem; }
+.receipt-big { margin: .5rem 0 0; }
+.receipt-big img { display: block; width: 100%; height: auto; border-radius: 4px; border: 1px solid var(--paper-edge); background: #fff; }
+.receipt-totals { display: flex; flex-wrap: wrap; gap: .4rem 1.25rem; margin: .6rem 0 0; font-size: .92rem; }
+.total-field { display: inline-flex; align-items: center; gap: .35rem; }
+.total-field .money { max-width: 8rem; }
+
+/* undo: close button */
+.undo-bar .undo-close { color: var(--paper); padding: .5rem .7rem; }

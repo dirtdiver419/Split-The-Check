@@ -48,6 +48,7 @@
         <p id="receipt-note" class="note"></p>
         <div class="row">
           <button id="crop-open" class="btn btn-primary" type="button">Crop and re-read</button>
+          <button id="scan-again" class="btn btn-quiet" type="button" hidden>Scan again</button>
           <label class="btn btn-quiet file-btn">
             <input id="photo-again" type="file" accept="image/*">
             Use a different photo
@@ -87,22 +88,35 @@
     <section class="sheet" aria-labelledby="h-items">
       <h2 id="h-items"><span class="step">3</span> Who had what</h2>
       <p id="items-hint" class="note">Items from the receipt show up here. Fix any the reader got wrong, then tap the people who had each one. Tap several people for shared plates.</p>
+      <div id="receipt-view" class="receipt-view" hidden>
+        <button id="receipt-toggle" class="btn btn-quiet" type="button" aria-expanded="false" aria-controls="receipt-big">Show receipt</button>
+        <figure id="receipt-big" class="receipt-big" hidden><img id="receipt-big-img" alt="Your receipt photo"></figure>
+      </div>
       <ol id="items" class="items"></ol>
       <button id="item-add" class="btn btn-quiet" type="button">Add an item</button>
       <p id="items-check" class="check" hidden></p>
+      <p id="receipt-totals" class="receipt-totals" hidden></p>
     </section>
 
     <section class="sheet" aria-labelledby="h-extras">
       <h2 id="h-extras"><span class="step">4</span> Tax and tip</h2>
       <div class="field">
-        <label for="tax">Tax</label>
-        <div class="money"><span aria-hidden="true">$</span><input id="tax" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00"></div>
+        <p class="field-label" id="tax-label">Tax</p>
+        <ul id="tax-list" class="charge-list" aria-labelledby="tax-label"></ul>
+        <div class="charge-foot">
+          <button id="tax-add" class="linkish" type="button">+ Add tax</button>
+          <span id="tax-sum" class="charge-sum"></span>
+        </div>
       </div>
 
-      <div class="field" id="fee-wrap" hidden>
-        <label for="fee">Fees and surcharges</label>
-        <div class="money"><span aria-hidden="true">$</span><input id="fee" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00"></div>
-        <p class="note">Kitchen, health-mandate or card fees. Split like tax, by what each person ordered.</p>
+      <div class="field" id="fee-block" hidden>
+        <p class="field-label" id="fee-label">Fees and surcharges</p>
+        <ul id="fee-list" class="charge-list" aria-labelledby="fee-label"></ul>
+        <div class="charge-foot">
+          <button id="fee-add" class="linkish" type="button">+ Add a fee</button>
+          <span id="fee-sum" class="charge-sum"></span>
+        </div>
+        <p class="note">Split evenly suits flat charges like delivery. By order splits it like tax, by what each person ordered.</p>
       </div>
       <button id="fee-show" class="linkish fee-show" type="button">Add a fee or surcharge</button>
 
@@ -150,6 +164,14 @@
         <p id="cards-tip" class="tip-cards" aria-live="polite"></p>
         <p id="cards-check" class="check"></p>
       </div>
+
+      <div class="field tip-split">
+        <p class="field-label" id="tip-split-label">Split the tip</p>
+        <div class="chips" id="tip-split" role="group" aria-labelledby="tip-split-label">
+          <button type="button" class="chip" data-even="0" aria-pressed="true">By order</button>
+          <button type="button" class="chip" data-even="1" aria-pressed="false">Split evenly</button>
+        </div>
+      </div>
     </section>
 
     <section aria-labelledby="h-split" class="results">
@@ -174,12 +196,13 @@
   <footer class="foot">
     <p>Nothing on this page is stored. Close or refresh it and everything's gone.</p>
     <p class="disclaimer">Not financial advice. The receipt reader can make mistakes, so check the items, prices and totals against the actual receipt before anyone pays.</p>
-    <p class="version">Version 2.2.0</p>
+    <p class="version">Version 2.3.0</p>
   </footer>
 
   <div id="undo-bar" class="undo-bar" role="status" aria-live="polite" hidden>
     <span id="undo-text"></span>
     <button id="undo-btn" type="button">Undo</button>
+    <button id="undo-close" class="undo-close" type="button" aria-label="Dismiss">×</button>
   </div>
 
   <div id="crop" class="crop-screen" role="dialog" aria-modal="true" aria-labelledby="crop-title" hidden>

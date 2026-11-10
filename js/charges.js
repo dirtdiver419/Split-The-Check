@@ -10,11 +10,14 @@
  *   tax   adds to the tax
  *   fee   adds to the fees (split like tax, by what each person ordered)
  *   item  stays a row on the bill, so it can be given to whoever it was for
+ *
+ * EVEN lists fees charged once per order whatever was ordered (delivery, small
+ * order). They start out split evenly; everything else starts out split by order.
  */
 
 export const PLACES = [
   { place: 'Arkansas', tax: ['a\\s*&\\s*p', 'advertising\\s+(and|&)\\s+promotion'] },
-  { place: 'California', fee: ['crv', 'health\\s+mandate', 'kitchen\\s+appreciation'] },
+  { place: 'California', fee: ['crv', 'driver\\s+benefits?', 'health\\s+mandate', 'kitchen\\s+appreciation'] },
   { place: 'California: Los Angeles', fee: ['benefits?\\s+surcharge', 'healthy\\s+l\\.?\\s*a\\.?'] },
   { place: 'California: San Francisco', fee: ['hcso', 'healthy\\s+s\\.?\\s*f\\.?', 'sf\\s*(hm|hcso|mandate)'] },
   { place: 'Connecticut', tax: ['meals\\s+tax'], fee: ['bottle\\s+deposit'] },
@@ -51,6 +54,7 @@ export const PLACES = [
   { place: 'Utah', tax: ['restaurant\\s+tax'] },
   { place: 'Vermont', tax: ['meals\\s+(and|&)\\s+rooms'], fee: ['bottle\\s+deposit'] },
   { place: 'Virginia', tax: ['meals\\s+tax'] },
+  { place: 'Washington: Seattle', fee: ['worker\\s+minimum\\s+payment'] },
 ];
 
 export const ANYWHERE = {
@@ -87,4 +91,21 @@ const build = (kind) => {
   return new RegExp(`\\b(?:${[...new Set(parts)].join('|')})\\b`);
 };
 
-export const CHARGE_RE = { tax: build('tax'), fee: build('fee'), item: build('item') };
+export const EVEN = [
+  'bag\\s+fee',
+  'courier',
+  'delivery',
+  'driver\\s+benefits?',
+  'expanded\\s+range',
+  'long\\s+distance',
+  'regulatory\\s+response',
+  'small\\s+order',
+  'worker\\s+minimum\\s+payment',
+];
+
+export const CHARGE_RE = {
+  tax: build('tax'),
+  fee: build('fee'),
+  item: build('item'),
+  even: new RegExp(`\\b(?:${EVEN.join('|')})\\b`),
+};
