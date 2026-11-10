@@ -20,4 +20,4 @@ Nothing is saved or uploaded. The receipt is read on your own phone, and closing
 
 Not financial advice. Receipt reading can be wrong, so check the items and totals against the receipt before anyone pays.
 
-Made with AI (Claude, by Anthropic). All rights reserved.
+Made with AI (Claude, by Anthropic). Licensed under the PolyForm Noncommercial License 1.0.0 (see LICENSE).
