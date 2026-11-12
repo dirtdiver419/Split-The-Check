@@ -881,12 +881,19 @@ function renderCheck() {
     } else {
       short = diff > 0;
       out.className = 'check warn';
-      out.textContent = `Items${fees} add up to ${formatMoney(sum)}, but the receipt's subtotal is ${formatMoney(subtotalCents)} (${diff > 0 ? 'missing' : 'extra'} ${formatMoney(Math.abs(diff))}). Check the prices against the photo.`;
+      const gap = Math.abs(diff);
+      out.textContent = `Items${fees} add up to ${formatMoney(sum)}, ${formatMoney(gap)} ${short ? 'less' : 'more'} than the receipt's subtotal of ${formatMoney(subtotalCents)}. Check the prices and totals against the photo.`;
       const noPrice = state.items.some((i) => i.cents === null && !isBlank(i));
       if (short && !noPrice) {
         out.append(el('br'), el('button', {
           type: 'button', class: 'btn btn-quiet fix-btn', text: `Add the missing ${formatMoney(diff)}`,
           onclick: () => addMissing(diff),
+        }));
+      } else if (!short && !state.discounts.some((r) => r.name === DIFF_NAME && chargeCents(r) === gap)) {
+        // The prices are right but the receipt charged less: everyone shares the difference by order.
+        out.append(el('br'), el('button', {
+          type: 'button', class: 'btn btn-quiet fix-btn', text: `Take ${formatMoney(gap)} off as a discount`,
+          onclick: () => takeOffDifference(gap),
         }));
       }
     }
@@ -897,6 +904,17 @@ function renderCheck() {
     t.classList.toggle('warn', short);
     t.querySelector('.tag-text').textContent = short ? 'Joined from 2 lines. Check this one' : 'Joined from 2 lines';
   });
+}
+
+const DIFF_NAME = 'Receipt difference';
+
+function takeOffDifference(cents) {
+  remember(`Took ${formatMoney(cents)} off as a discount`);
+  state.discounts.push({ id: newId(), name: DIFF_NAME, raw: centsToInput(cents) });
+  renderCharges();
+  renderItems();
+  renderResults();
+  $('items-check').focus();
 }
 
 function addMissing(cents) {
