@@ -607,3 +607,55 @@ body.no-scroll { overflow: hidden; }
   .opt-kinds .chips { gap: .3rem; }
   .opt-menu .chip { padding-left: calc(.5rem - .5px); padding-right: calc(.5rem - .5px); }
 }
+
+/* ================= 2.5.0 ================= */
+
+/* step 1: the text option sits right under the photo button, the same size */
+.paste { margin-top: 0; padding-top: 0; border-top: 0; }
+#receipt-done ~ .paste, #receipt-error ~ .paste { margin-top: .9rem; }
+.paste .btn-block { margin-bottom: 0; }
+
+/* photos: one, or several side by side */
+.preview.parts { display: flex; flex-wrap: wrap; gap: .6rem; }
+.preview.parts .part { margin: 0; display: flex; flex-direction: column; align-items: center; gap: .25rem; flex: 0 1 calc(50% - .3rem); min-width: 0; }
+.preview.parts img { width: 100%; height: 9rem; max-height: none; object-fit: contain; }
+.preview.parts figcaption { font-size: .8rem; color: var(--muted); }
+
+/* the note after a reading: all muted, laid out instead of emphasized */
+.read-note { margin: .6rem 0 .9rem; }
+.note-found { display: block; }
+.note-figs { display: flex; flex-wrap: wrap; gap: .5rem 1.4rem; margin-top: .45rem; }
+.fig { display: flex; flex-direction: column; line-height: 1.25; }
+.fig-label { font-size: .78rem; }
+.fig-val { font-variant-numeric: tabular-nums; }
+.note-heads { display: block; border-left: 3px solid var(--brass); padding-left: .65rem; margin-top: .7rem; }
+.note-found + .note-heads, .note-heads:first-child { margin-top: .45rem; }
+.note-heads:first-child { margin-top: 0; }
+.head { display: block; }
+.head + .head { margin-top: .3rem; }
+
+/* fixes side by side, photo actions as quiet links */
+.fix-row { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
+.fix-row .btn { white-space: nowrap; padding-left: .4rem; padding-right: .4rem; font-size: .95rem; }
+.photo-links { display: flex; flex-wrap: wrap; gap: 0 1.1rem; margin-top: .4rem; }
+.quiet-link {
+  font: inherit; font-size: .85rem; font-weight: 600; color: var(--muted);
+  background: none; border: 0; padding: .6rem 0; cursor: pointer;
+  text-decoration: underline; text-decoration-color: #5d6a7580; text-underline-offset: 3px;
+}
+.quiet-link.file-btn { display: inline-block; }
+.quiet-link.file-btn:focus-within { border-radius: 4px; }
+.quiet-link.inline { font-size: inherit; font-weight: 400; padding: 0; }
+
+/* Choose a photo */
+.choose-list { display: flex; gap: .75rem; justify-content: center; flex-wrap: wrap; margin: 0 0 1rem; }
+.choose-photo {
+  display: flex; flex-direction: column; align-items: center; gap: .3rem; padding: .4rem;
+  font: inherit; font-weight: 600; color: var(--ink); cursor: pointer;
+  background: #fff; border: 1.5px solid #c7cdd2; border-radius: 10px;
+}
+.choose-photo:hover { border-color: var(--booth); }
+.choose-photo img { height: 7.5rem; width: auto; max-width: 9rem; object-fit: contain; border-radius: 3px; }
+
+/* Show receipt: photos stacked */
+.receipt-big img + img { margin-top: .4rem; }
