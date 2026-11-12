@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.1] - 2026-11-12
+
+### Changed
+
+- The check under the items says plainly which way it's off: "Items add up to $33.50, $10.00 less than the receipt's subtotal of $43.50" or "…$10.00 more than…", then "Check the prices and totals against the photo."
+
+### Added
+
+- When the items add up to more than the receipt's subtotal, **Take $10.00 off as a discount** adds a **Receipt difference** discount, shared by what each person ordered. For receipts that undercharged: everyone's shares then add up to what was actually charged, so whoever paid isn't paid back more than they spent.
+
 ## [2.5.0] - 2026-11-12
 
 ### Added
