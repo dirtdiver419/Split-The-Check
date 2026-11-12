@@ -41,25 +41,28 @@
       </div>
 
       <div id="receipt-done" hidden>
-        <figure class="preview">
-          <img id="preview-img" alt="Your receipt photo">
-        </figure>
-        <p id="receipt-note" class="note"></p>
-        <div class="row">
-          <button id="crop-open" class="btn btn-primary" type="button">Crop and re-read</button>
-          <button id="scan-again" class="btn btn-quiet" type="button" hidden>Scan again</button>
-          <label class="btn btn-quiet file-btn">
+        <div id="preview" class="preview"></div>
+        <p id="receipt-note" class="note read-note"></p>
+        <div class="fix-row">
+          <button id="crop-open" class="btn btn-quiet" type="button">Crop and re-read</button>
+          <button id="scan-again" class="btn btn-quiet" type="button">Deep scan</button>
+        </div>
+        <div class="photo-links">
+          <label class="quiet-link file-btn">
+            <input id="photo-add" type="file" accept="image/*">
+            + Add the rest of the receipt
+          </label>
+          <label class="quiet-link file-btn">
             <input id="photo-again" type="file" accept="image/*">
             Use a different photo
           </label>
-          <button id="photo-remove" class="btn btn-quiet" type="button">Remove photo</button>
         </div>
       </div>
 
       <p id="receipt-error" class="error" role="alert" hidden></p>
 
       <div id="paste" class="paste">
-        <button id="paste-toggle" class="btn btn-quiet" type="button" aria-expanded="false" aria-controls="paste-panel">Type or paste instead</button>
+        <button id="paste-toggle" class="btn btn-quiet btn-block" type="button" aria-expanded="false" aria-controls="paste-panel">Type or paste instead</button>
         <div id="paste-panel" class="paste-panel" hidden>
           <label for="paste-text">Items or receipt text</label>
           <textarea id="paste-text" rows="7" maxlength="20000" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Caesar Salad 12.50&#10;Iced Tea 3.25&#10;Sales Tax 1.45"></textarea>
@@ -119,14 +122,14 @@
       </div>
       <button id="fee-show" class="linkish fee-show" type="button">Add a fee or surcharge</button>
 
-      <div class="field" id="disc-wrap" hidden>
-        <label for="disc">Discounts</label>
-        <div class="money"><span aria-hidden="true">$</span><input id="disc" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00"></div>
-        <p id="disc-err" class="field-error" hidden></p>
-        <div class="field-note-row">
-          <p id="disc-note" class="note">Coupons and other discounts on the whole bill, spread by what each person ordered.</p>
-          <button id="disc-to-row" class="linkish" type="button">Make it a line item</button>
+      <div class="field" id="disc-block" hidden>
+        <p class="field-label" id="disc-label">Discounts</p>
+        <ul id="disc-list" class="charge-list" aria-labelledby="disc-label"></ul>
+        <div class="charge-foot">
+          <button id="disc-add" class="linkish" type="button">+ Add a discount</button>
+          <span id="disc-sum" class="charge-sum"></span>
         </div>
+        <p class="note">Shared by what each person ordered.</p>
       </div>
       <button id="disc-show" class="linkish fee-show" type="button">Add a discount</button>
 
@@ -204,7 +207,7 @@
   <footer class="foot">
     <p>Nothing on this page is stored. Close or refresh it and everything's gone.</p>
     <p class="disclaimer">Not financial advice. The receipt reader can make mistakes, so check the items, prices and totals against the actual receipt before anyone pays.</p>
-    <p class="version">Version 2.4.0</p>
+    <p class="version">Version 2.5.0</p>
   </footer>
 
   <div id="undo-bar" class="undo-bar" role="status" aria-live="polite" hidden>
@@ -222,6 +225,17 @@
       <div class="confirm-bar">
         <button id="confirm-cancel" class="btn btn-quiet" type="button">Cancel</button>
         <button id="confirm-ok" class="btn btn-primary" type="button"></button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="choose" class="confirm" aria-labelledby="choose-title" aria-describedby="choose-body">
+    <div class="confirm-card">
+      <h2 id="choose-title">Choose a photo</h2>
+      <p id="choose-body"></p>
+      <div id="choose-list" class="choose-list"></div>
+      <div class="confirm-bar">
+        <button id="choose-cancel" class="btn btn-quiet" type="button">Cancel</button>
       </div>
     </div>
   </dialog>

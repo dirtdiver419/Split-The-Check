@@ -5,6 +5,29 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0] - 2026-11-12
+
+### Added
+
+- Long receipts: **+ Add the rest of the receipt** in step 1 adds another photo of the same receipt, and its items go after the others instead of replacing them. Photos show side by side as Photo 1, Photo 2 and so on, and **Show receipt** stacks them in order.
+- Lines at the top of a new photo that repeat the bottom of the last one (same name and price) are skipped, and the note says how many. Undo puts them back.
+- When there's more than one photo, **Crop and re-read** and **Deep scan** ask which one ("Choose a photo"), and re-read only that photo's items, in place. Who had what on the other photos stays.
+- Tall photos, like a long screenshot or a tight crop of a long receipt, keep more of their detail for the reader. A long, narrow made-up test receipt with small print went from nothing read to all 100 lines.
+- Several discounts: whole-bill discounts are now a list like fees, each with a name, an amount, ✕ and **Options → Move to items**, plus **+ Add a discount** and a total. **Spread over the whole bill** adds the discount as its own named row.
+
+### Changed
+
+- Step 1 after a reading: **Crop and re-read** and **Deep scan** sit side by side as equal buttons, with **+ Add the rest of the receipt** and **Use a different photo** as quiet links underneath. **Scan again** is now **Deep scan**.
+- The note after a reading is laid out instead of run together: what was found on one line, then the receipt's subtotal, tax and total as small labeled figures ("—" when not found), then a heads-up line with a khaki edge only when something needs attention (looks cut off, lines skipped, card slip, no prices).
+- **Type or paste instead** is a full-size button under **Take or choose a photo**, and steps aside once a photo has given items to work with.
+- After a crop, the step 1 preview and **Show receipt** show the cropped, turned photo. **Crop and re-read** still opens the whole photo so the crop can be changed.
+- **Options** shows ▸ when closed and ▾ when open, the usual show-and-hide arrows. Add-ons open and close with **Options** like items do, so **Done** is gone.
+- Undo now brings back photos too: undoing an added photo, a new photo or a re-crop puts the earlier photos back. **Start over** still lets go of every photo right away.
+
+### Removed
+
+- **Remove photo**. **Use a different photo** and **Start over** cover it.
+
 ## [2.4.0] - 2026-11-12
 
 ### Added
