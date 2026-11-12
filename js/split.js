@@ -4,7 +4,7 @@ const MAX_CENTS = 100_000_000; // $1,000,000 ceiling. Nobody's dinner costs more
 
 /**
  * Parse user- or OCR-supplied money text into integer cents.
- * Accepts "12.50", "$12.50", "12,50", "1,234.56", "-3.00", "(3.00)".
+ * Accepts "12.50", "$12.50", "12,50", "1,234.56", "-2.50", "(2.50)".
  * Returns null for anything that isn't clearly an amount.
  */
 export function parseMoney(input) {

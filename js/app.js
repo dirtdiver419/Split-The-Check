@@ -18,7 +18,7 @@ const state = {
   rotation: 0,
   crop: null, // { x, y, w, h } as fractions of the rotated photo
   scanToken: 0,
-  undo: null,
+  history: [], // [{ snap, text }], newest last, for Undo
   undoTimer: 0,
   undoSticky: false, // stays up until the next tap (after Scan again)
   undoHover: false,
@@ -29,6 +29,7 @@ const state = {
   lastRead: null, // how the current photo was last read, for Scan again
   receiptShown: false,
   editing: null, // 'subtotalCents' | 'totalCents' while that receipt figure is being edited
+  wasDone: false, // last results check found nothing missing
 };
 
 const LIMITS = { people: 30, items: 150, nameLen: 30, itemLen: 60, fileBytes: 25 * 1024 * 1024, pasteChars: 20000, maxShares: 9 };
@@ -77,6 +78,42 @@ function keepFocus(render) {
 }
 
 const cleanText = (s, max) => String(s).replace(/[\u0000-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim().slice(0, max);
+
+/* --------------------------------------------------------- money box errors */
+
+/** "$", "." or "-" on their own are an amount still being typed, not a mistake. */
+const halfTyped = (t) => /^[\s$.\-]*$/.test(t);
+/** True when a money box holds something that can't be read as an amount. */
+const badMoney = (raw, { negative = true } = {}) => {
+  const t = String(raw).trim();
+  if (halfTyped(t)) return false;
+  const c = parseMoney(t);
+  return c === null || (!negative && c < 0);
+};
+const badPct = (raw) => {
+  const t = String(raw).trim();
+  return !halfTyped(t) && parsePercent(t) === null;
+};
+
+/**
+ * Red outline and a message under the box as soon as its text can't be an amount.
+ * The message sits after the box, so the box itself never moves while someone types in it.
+ * Screen readers get it through aria-describedby, and hear it once when they leave the box.
+ */
+function guard(input, err, check) {
+  const update = () => {
+    const msg = check(input.value);
+    input.setAttribute('aria-invalid', String(Boolean(msg)));
+    if (err.textContent !== msg) err.textContent = msg;
+    err.hidden = !msg;
+    if (msg) input.setAttribute('aria-describedby', err.id);
+    else input.removeAttribute('aria-describedby');
+  };
+  input.addEventListener('input', update);
+  input.addEventListener('blur', () => { if (!err.hidden) announce(err.textContent); });
+  update();
+  return update;
+}
 
 /* ------------------------------------------------------------------- model */
 
@@ -155,22 +192,29 @@ function snapshot() {
     fees: state.fees.map((r) => ({ ...r })),
     receipt: { ...state.receipt },
     tipEven: state.tipEven,
+    tipMode: state.tipMode,
+    tip: { pct: $('tip-pct').value, amt: $('tip-amt').value, total: $('tip-total').value },
+    gratuity: state.gratuityFromReceipt,
     disc: $('disc').value,
     discShown: !$('disc-wrap').hidden,
     discNames: [...state.discNames],
+    note: $('receipt-note').textContent,
     focusKey: focusKey(),
   };
 }
 
 const UNDO_MS = 7000;
+const HISTORY_MAX = 20;
 
-/** Offer one step back. Call it before changing anything. */
+/** Add a step to the history and show the toast. Call it before changing anything. */
 function remember(text, { snap = snapshot(), sticky = false } = {}) {
-  state.undo = snap;
+  state.history.push({ snap, text });
+  if (state.history.length > HISTORY_MAX) state.history.shift();
   state.undoSticky = sticky;
   $('undo-text').textContent = text;
   $('undo-bar').hidden = false;
   armUndo();
+  renderUndoButton();
 }
 
 const keyboardOpen = () => {
@@ -183,22 +227,40 @@ const keyboardOpen = () => {
     and for anyone moving around with a keyboard. Otherwise it goes after 7 seconds. */
 function armUndo() {
   clearTimeout(state.undoTimer);
-  if (!state.undo || state.undoSticky) return;
+  if ($('undo-bar').hidden || state.undoSticky) return;
   const held = state.undoHover || state.keyboardUser || keyboardOpen() || $('undo-bar').contains(document.activeElement);
   if (!held) state.undoTimer = setTimeout(hideUndo, UNDO_MS);
 }
 
+/** Hides the toast. The steps stay in the history for the Undo button at the bottom. */
 function hideUndo() {
   clearTimeout(state.undoTimer);
-  state.undo = null;
   state.undoSticky = false;
   $('undo-bar').hidden = true;
   $('undo-text').textContent = '';
 }
 
-function undo() {
-  const snap = state.undo;
-  if (!snap) return;
+/** The Undo button above Start over, with what it would undo. */
+function renderUndoButton() {
+  const steps = state.history;
+  $('undo-wrap').hidden = !steps.length;
+  if (!steps.length) return;
+  const more = steps.length - 1;
+  $('undo-what').textContent = `Undoes: ${steps[steps.length - 1].text}`;
+  $('undo-more').textContent = more ? `${more} more step${more === 1 ? '' : 's'} after that` : '';
+}
+
+/** A polite message for screen readers. */
+function announce(text) {
+  const out = $('sr-status');
+  out.textContent = '';
+  setTimeout(() => { out.textContent = text; }, 50);
+}
+
+function undo({ fromButton = false } = {}) {
+  const step = state.history.pop();
+  if (!step) return;
+  const snap = step.snap;
   state.people = snap.people;
   state.payerIds = snap.payerIds;
   state.pay = snap.pay;
@@ -208,11 +270,27 @@ function undo() {
   state.receipt = snap.receipt;
   state.tipEven = snap.tipEven;
   state.discNames = snap.discNames;
+  state.gratuityFromReceipt = snap.gratuity;
+  state.editing = null;
   $('disc').value = snap.disc;
+  $('tip-pct').value = snap.tip.pct;
+  $('tip-amt').value = snap.tip.amt;
+  $('tip-total').value = snap.tip.total;
+  $('receipt-note').textContent = snap.note;
   showDisc(snap.discShown);
+  syncTipPresets();
   hideUndo();
+  setTipMode(snap.tipMode);
   renderAll();
-  restoreFocus(snap.focusKey);
+  renderUndoButton();
+  if (fromButton) {
+    // Stay at the bottom of the page instead of jumping back up to where the change was made.
+    if (state.history.length) $('undo-step').focus();
+    else $('reset').focus();
+    announce(`Undone: ${step.text}`);
+  } else {
+    restoreFocus(snap.focusKey);
+  }
 }
 
 /* ------------------------------------------------------------------ people */
@@ -350,6 +428,7 @@ function makeAddonOf(item, parent) {
   syncAddons(parent);
   renderItems();
   renderResults();
+  restoreFocus(`addon:${item.id}`);
 }
 
 function makeOwnItem(addon) {
@@ -393,17 +472,50 @@ function setQty(item, n) {
   renderResults();
 }
 
+/** Turns a dish's add-ons into rows of their own (nobody assigned), before the dish becomes a charge or a discount. */
+function detachAddons(item) {
+  for (const a of addonsOf(item)) {
+    a.addon = false; a.parentId = null; a.open = false; a.menuOpen = false; a.assigned = new Map(); a.uneven = false;
+  }
+}
+
+/** " · Crispy Shrimp is now its own item", for the toast. */
+function detachNote(item) {
+  const own = item.addon ? [] : addonsOf(item);
+  if (!own.length) return '';
+  const names = listAnd(own.map((a) => a.name || 'an add-on'));
+  return ` · ${names} ${own.length === 1 ? 'is now its own item' : 'are now their own items'}`;
+}
+
 function flipSign(item) {
   if (!item.cents) return;
-  remember(`Made ${itemLabel(item)} ${item.cents > 0 ? 'a discount' : 'a regular item'}`);
+  const toDiscount = item.cents > 0;
+  remember(`Made ${itemLabel(item)} ${toDiscount ? 'a discount' : 'a regular item'}${toDiscount ? detachNote(item) : ''}`);
+  if (toDiscount) detachAddons(item);
   item.cents = -item.cents;
   item.afterSubtotal = false;
-  item.menuOpen = false;
-  renderItems();
+  renderItems(); // the menu stays open so focus stays on the choice just made
   renderResults();
 }
 
 const splitQuantity = (item) => splitRows(item, item.qty);
+
+/** Options → Move this item ↑ ↓. Add-ons travel with their dish. */
+function moveItem(item, dir) {
+  const tops = topItems();
+  const at = tops.indexOf(item);
+  const other = tops[at + dir];
+  if (at < 0 || !other) return;
+  const order = [...tops];
+  order[at] = other;
+  order[at + dir] = item;
+  const next = order.flatMap((t) => [t, ...addonsOf(t)]);
+  if (next.length !== state.items.length) return;
+  remember(`Moved ${itemLabel(item)} ${dir < 0 ? 'up' : 'down'}`);
+  state.items = next;
+  renderItems();
+  renderResults();
+}
 
 /** One row becomes `n` rows with the same name, the price split evenly to the cent. */
 function splitRows(item, n) {
@@ -423,6 +535,7 @@ function splitRows(item, n) {
   state.items.splice(blockEnd(item), 0, ...copies.slice(1));
   renderItems();
   renderResults();
+  restoreFocus(`opt:${item.id}`);
 }
 
 /** Name and price inputs, shared by dishes and opened add-ons. */
@@ -433,8 +546,10 @@ function itemInputs(item, label) {
   });
   const priceInput = el('input', {
     type: 'text', inputmode: 'decimal', autocomplete: 'off', placeholder: '0.00', enterkeyhint: item.addon ? 'done' : 'next',
-    value: item.cents === null ? '' : centsToInput(item.cents), 'aria-label': `${label} price`, 'aria-invalid': 'false',
+    value: item.cents === null ? item.rawPrice : centsToInput(item.cents), 'aria-label': `${label} price`,
   });
+  const priceErr = el('p', { class: 'field-error', id: `err-${item.id}`, hidden: true });
+  guard(priceInput, priceErr, (v) => (badMoney(v) ? 'The price doesn’t look like a dollar amount.' : ''));
 
   nameInput.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' || e.isComposing) return;
@@ -450,7 +565,6 @@ function itemInputs(item, label) {
     const cents = parseMoney(priceInput.value);
     item.cents = cents;
     item.rawPrice = priceInput.value.trim().slice(0, 20);
-    priceInput.setAttribute('aria-invalid', String(cents === null && priceInput.value.trim() !== ''));
     renderCheck();
     renderPayerCalcs();
     renderResults();
@@ -475,17 +589,16 @@ function itemInputs(item, label) {
     if (item.cents !== null) priceInput.value = centsToInput(item.cents);
   });
 
-  return { nameInput, priceInput };
+  return { nameInput, priceInput, priceErr };
 }
 
 function closeAddon(addon) {
-  if (!addon.name && addon.cents === null && !addon.rawPrice) {
-    state.items = state.items.filter((i) => i !== addon); // an empty add-on is just discarded
-  } else {
-    addon.open = false;
-  }
+  const kept = addon.name || addon.cents !== null || addon.rawPrice;
+  if (kept) { addon.open = false; addon.menuOpen = false; }
+  else state.items = state.items.filter((i) => i !== addon); // an empty add-on is just discarded
   renderItems();
   renderResults();
+  if (!(kept && restoreFocus(`addon:${addon.id}`))) restoreFocus(`opt:${addon.parentId}`);
 }
 
 function sharesNote(item) {
@@ -576,30 +689,73 @@ function guessControls(item) {
   ];
 }
 
+/** One line of the Options panel: label on the left, control on the right. */
+const optRow = (label, ...right) => el('div', { class: 'opt-row' }, el('span', { class: 'opt-label', text: label }), ...right);
+
+/** A full-width line in the Options panel that does something, with a › on the right. */
+const optAction = (label, onclick, key) => el('button', { type: 'button', class: 'opt-action', 'data-key': key, onclick },
+  el('span', { text: label }), el('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }));
+
+/** "This item is:" with one choice per kind. `kinds` = [[label, isCurrent, onPick]]. */
+function kindRow(item, kinds, needsPrice) {
+  const row = el('div', { class: 'opt-row opt-kinds' }, el('span', { class: 'opt-label', id: `kind-${item.id}`, text: 'This item is:' }));
+  const chips = el('div', { class: 'chips', role: 'group', 'aria-labelledby': `kind-${item.id}` });
+  for (const [label, current, pick] of kinds) {
+    chips.append(el('button', {
+      type: 'button', class: 'chip', text: label, 'aria-pressed': String(current), 'data-key': `kind:${label}:${item.id}`,
+      disabled: !current && needsPrice && !item.cents,
+      onclick: () => { if (!current) pick(); },
+    }));
+  }
+  row.append(chips);
+  if (needsPrice && !item.cents) row.append(el('p', { class: 'opt-note', text: 'Enter a price first to change this.' }));
+  return row;
+}
+
+/** The "Options" link at the end of a price line. */
+function optButton(open, key, onclick, label) {
+  return el('button', {
+    type: 'button', class: 'linkish opt-btn', 'aria-expanded': String(open), 'data-key': key, 'aria-label': label, onclick,
+  }, 'Options', open ? el('span', { 'aria-hidden': 'true', text: ' ▴' }) : null);
+}
+
 function renderAddon(addon, parent) {
   const li = el('li', { class: `addon${addon.open ? ' is-open' : ''}`, 'data-item': addon.id });
   const rerender = () => { renderItems(); renderResults(); };
+  const name = addon.name || 'Add-on';
 
   if (!addon.open) {
     li.append(el('div', { class: 'addon-row' },
-      el('span', { class: 'addon-name' }, `+ ${addon.qty > 1 ? `${addon.qty}× ` : ''}${addon.name || 'Add-on'}`, el('small', { text: `Goes with ${parent.name || 'this dish'} · same people` })),
+      el('span', { class: 'addon-name' }, `+ ${addon.qty > 1 ? `${addon.qty}× ` : ''}${name}`, el('small', { text: `Goes with ${parent.name || 'this dish'}` })),
       el('span', { class: 'addon-price', text: addon.cents === null ? '—' : formatMoney(addon.cents) }),
-      el('button', { type: 'button', class: 'linkish', text: 'Change', 'data-key': `addon:${addon.id}`, onclick: () => { addon.open = true; rerender(); } })
+      optButton(false, `addon:${addon.id}`, () => {
+        addon.open = true;
+        addon.menuOpen = true;
+        rerender();
+        restoreFocus(`done:${addon.id}`);
+      }, `Options for ${name}`)
     ));
     return li;
   }
 
-  const { nameInput, priceInput } = itemInputs(addon, `Add-on ${addon.name || ''}`.trim());
+  const { nameInput, priceInput, priceErr } = itemInputs(addon, `Add-on ${addon.name || ''}`.trim());
   li.append(
     el('div', { class: 'item-top' }, nameInput,
       el('button', { type: 'button', class: 'x-btn', 'aria-label': 'Remove add-on', text: '×', 'data-key': `x:${addon.id}`, onclick: () => removeItem(addon.id) })),
-    el('div', { class: 'item-price' }, el('div', { class: 'money' }, el('span', { 'aria-hidden': 'true', text: '$' }), priceInput)),
-    el('div', { class: 'item-links' },
-      el('button', { type: 'button', class: 'linkish', text: 'Make it its own item', onclick: () => makeOwnItem(addon) }),
-      addon.cents > 0 ? el('button', { type: 'button', class: 'linkish', text: 'Make it a fee', onclick: () => makeCharge(addon, 'fee') }) : null,
-      addon.cents > 0 ? el('button', { type: 'button', class: 'linkish', text: 'Make it tax', onclick: () => makeCharge(addon, 'tax') }) : null,
-      el('button', { type: 'button', class: 'linkish', text: 'Done', onclick: () => closeAddon(addon) }))
+    el('div', { class: 'item-price' },
+      el('div', { class: 'money' }, el('span', { 'aria-hidden': 'true', text: '$' }), priceInput),
+      el('button', { type: 'button', class: 'linkish opt-btn', text: 'Done', 'data-key': `done:${addon.id}`, onclick: () => closeAddon(addon) })),
+    priceErr
   );
+  if (addon.menuOpen) {
+    li.append(el('div', { class: 'opt-menu' },
+      optAction(`Detach from ${parent.name || 'this dish'}`, () => makeOwnItem(addon), `detach:${addon.id}`),
+      kindRow(addon, [
+        ['Add-on', true, null],
+        ['Fee', false, () => makeCharge(addon, 'fee')],
+        ['Tax', false, () => makeCharge(addon, 'tax')],
+      ], true)));
+  }
   return li;
 }
 
@@ -610,37 +766,38 @@ function stepper(value, min, max, label, onChange, key) {
     el('button', { type: 'button', class: 'step-btn', text: '+', 'aria-label': `${label}: one more`, disabled: value >= max, 'data-key': `${key}:more`, onclick: () => onChange(value + 1) }));
 }
 
-/** "− 2 + × $9.00" next to the price. The line's total stays; the per-item price follows. */
-function qtyControl(item) {
+/** "2 × $17.75" next to the price. Shown only; the total is what's typed. Rounded up to the cent. */
+function unitText(item) {
   const q = shownQty(item);
-  const wrap = stepper(q, 1, 20, `Quantity of ${item.name || 'this item'}`, (n) => setQty(item, n), `qty:${item.id}`);
-  if (item.cents !== null) wrap.append(el('span', { class: 'unit', text: `× ${formatMoney(Math.round(item.cents / q))}` }));
-  return wrap;
+  if (q < 2 || item.cents === null || item.cents < 0) return null;
+  return el('span', { class: 'unit', text: `${q} × ${formatMoney(Math.ceil(item.cents / q))}` });
 }
 
-function changeMenu(item, above) {
+function optionsMenu(item, above, isFirst, isLast) {
   const isDiscount = item.cents !== null && item.cents < 0;
   const n = item.splitN ?? Math.max(2, shownQty(item));
-  const menu = el('div', { class: 'change-menu' });
+  const menu = el('div', { class: 'opt-menu', id: `menu-${item.id}` });
   if (!isDiscount) {
-    menu.append(el('div', { class: 'menu-row' }, el('span', { text: 'Quantity' }),
-      stepper(shownQty(item), 1, 20, 'Quantity', (v) => setQty(item, v), `menuqty:${item.id}`)));
-  }
-  menu.append(el('div', { class: 'menu-row' }, el('span', { text: 'Split into rows' }),
-    stepper(n, 2, 20, 'Rows', (v) => { item.splitN = v; renderItems(); }, `rows:${item.id}`),
-    el('button', { type: 'button', class: 'btn btn-quiet mini', text: 'Split', onclick: () => splitRows(item, n) })));
-  if (above && !isBlank(above)) {
-    menu.append(el('button', { type: 'button', class: 'linkish', text: `Make it an add-on of ${above.name || 'the item above'}`, onclick: () => makeAddonOf(item, above) }));
-  }
-  if (item.cents) {
-    menu.append(el('button', { type: 'button', class: 'linkish', text: isDiscount ? 'Make it a regular item' : 'Make it a discount', onclick: () => flipSign(item) }));
-  }
-  if (item.cents > 0 && !addonsOf(item).length) {
     menu.append(
-      el('button', { type: 'button', class: 'linkish', text: 'Make it a fee', onclick: () => makeCharge(item, 'fee') }),
-      el('button', { type: 'button', class: 'linkish', text: 'Make it tax', onclick: () => makeCharge(item, 'tax') })
+      optRow('Quantity', stepper(shownQty(item), 1, 20, 'Quantity', (v) => setQty(item, v), `menuqty:${item.id}`)),
+      optRow('Split into', el('span', { class: 'opt-split' },
+        stepper(n, 2, 20, 'Split into', (v) => { item.splitN = v; renderItems(); }, `rows:${item.id}`),
+        el('button', { type: 'button', class: 'pill', text: 'Split', 'data-key': `split:${item.id}`, 'aria-label': `Split into ${n}`, onclick: () => splitRows(item, n) }))),
+      optAction('Add an add-on', () => addAddon(item), `addaddon:${item.id}`)
     );
   }
+  if (!isFirst && above && !isBlank(above)) {
+    menu.append(optAction(`Attach to ${above.name || 'the item above'}`, () => makeAddonOf(item, above), `attach:${item.id}`));
+  }
+  menu.append(optRow('Move this item', el('span', { class: 'opt-move' },
+    el('button', { type: 'button', class: 'step-btn', text: '↑', 'aria-label': 'Move up', disabled: isFirst, 'data-key': `up:${item.id}`, onclick: () => moveItem(item, -1) }),
+    el('button', { type: 'button', class: 'step-btn', text: '↓', 'aria-label': 'Move down', disabled: isLast, 'data-key': `down:${item.id}`, onclick: () => moveItem(item, 1) }))));
+  menu.append(kindRow(item, [
+    ['Item', !isDiscount, () => flipSign(item)],
+    ['Discount', isDiscount, () => flipSign(item)],
+    ['Fee', false, () => makeCharge(item, 'fee')],
+    ['Tax', false, () => makeCharge(item, 'tax')],
+  ], true));
   return menu;
 }
 
@@ -656,21 +813,24 @@ function drawItems() {
       'data-item': item.id, tabindex: '-1',
     });
     const rerender = () => { renderItems(); renderResults(); };
-    const { nameInput, priceInput } = itemInputs(item, `Item ${idx + 1}`);
+    const { nameInput, priceInput, priceErr } = itemInputs(item, `Item ${idx + 1}`);
+    const label = item.name || `item ${idx + 1}`;
 
     li.append(
       el('div', { class: 'item-top' }, nameInput,
         el('button', { type: 'button', class: 'x-btn', 'aria-label': `Remove item ${idx + 1}`, text: '×', 'data-key': `x:${item.id}`, onclick: () => removeItem(item.id) })),
       el('div', { class: `item-price${item.guess ? ' guess' : ''}` },
         el('div', { class: 'money' }, el('span', { 'aria-hidden': 'true', text: '$' }), priceInput),
+        unitText(item),
         ...guessControls(item),
-        missing && !item.guess && item.name ? el('span', { class: 'missing-note', text: 'No price found. Enter it or remove this row.' }) : null,
-        shownQty(item) > 1 && !isDiscount ? qtyControl(item) : null,
+        missing && !item.guess && item.name && !item.rawPrice ? el('span', { class: 'missing-note', text: 'No price found. Enter it or remove this row.' }) : null,
         item.qtyGuess && item.qty > 1 && !isDiscount
           ? el('button', { type: 'button', class: 'linkish split-link', text: `Split into ${item.qty}?`, onclick: () => splitQuantity(item) })
           : null,
-        isDiscount ? el('button', { type: 'button', class: 'btn-confirm', text: 'Spread over the whole bill', onclick: () => spreadDiscount(item) }) : null
-      )
+        isDiscount ? el('button', { type: 'button', class: 'btn-confirm', text: 'Spread over the whole bill', onclick: () => spreadDiscount(item) }) : null,
+        isBlank(item) ? null : optButton(item.menuOpen, `opt:${item.id}`, () => { item.menuOpen = !item.menuOpen; renderItems(); }, `Options for ${label}`)
+      ),
+      priceErr
     );
     if (isDiscount) li.append(el('p', { class: 'discount-note', text: 'A discount. Tap who it was for, or spread it over everyone by what they ordered.' }));
 
@@ -683,15 +843,7 @@ function drawItems() {
     const addons = addonsOf(item);
     if (addons.length) li.append(el('ul', { class: 'addons', 'aria-label': 'Add-ons' }, ...addons.map((a) => renderAddon(a, item))));
 
-    if (!isBlank(item)) {
-      li.append(el('div', { class: 'item-links' },
-        el('button', { type: 'button', class: 'linkish', text: '+ Add an add-on', onclick: () => addAddon(item) }),
-        el('button', {
-          type: 'button', class: 'linkish change-btn', 'aria-expanded': String(item.menuOpen), 'data-key': `change:${item.id}`,
-          onclick: () => { item.menuOpen = !item.menuOpen; renderItems(); },
-        }, 'Change', item.menuOpen ? el('span', { 'aria-hidden': 'true', text: ' ▴' }) : null)));
-      if (item.menuOpen) li.append(changeMenu(item, tops[idx - 1]));
-    }
+    if (item.menuOpen && !isBlank(item)) li.append(optionsMenu(item, tops[idx - 1], idx === 0, idx === tops.length - 1));
 
     if (state.people.length) li.append(chipsFor(item, rerender));
     return li;
@@ -844,7 +996,7 @@ function chargeCents(row) {
   const raw = row.raw.trim();
   if (!raw) return 0;
   const c = parseMoney(raw);
-  return c !== null && c >= 0 ? c : null;
+  return c === null ? null : Math.abs(c); // "-2.50" becomes 2.50 when the box is left
 }
 
 function sumCharges(rows, pick = () => true) {
@@ -882,11 +1034,12 @@ function chargeRow(row, kind) {
 
   const amount = el('input', {
     type: 'text', inputmode: 'decimal', autocomplete: 'off', placeholder: '0.00', value: row.raw,
-    'aria-label': `${label} amount`, 'aria-invalid': String(chargeCents(row) === null),
+    'aria-label': `${label} amount`,
   });
+  const err = el('p', { class: 'field-error', id: `err-${row.id}`, hidden: true });
+  guard(amount, err, (v) => (badMoney(v) ? `The ${isFee ? 'fee' : 'tax'} amount doesn’t look like a dollar amount.` : ''));
   amount.addEventListener('input', () => {
     row.raw = amount.value.slice(0, 12);
-    amount.setAttribute('aria-invalid', String(chargeCents(row) === null));
     renderChargeSums();
     renderCheck();
     renderPayerCalcs();
@@ -901,12 +1054,8 @@ function chargeRow(row, kind) {
   const line = el('div', { class: 'charge-line' }, el('div', { class: 'money' }, el('span', { 'aria-hidden': 'true', text: '$' }), amount));
   li.append(el('div', { class: 'charge-top' },
     nameInput,
-    el('button', {
-      type: 'button', class: 'more-btn', text: '⋯', 'aria-label': `More options for ${label}`, 'aria-expanded': String(Boolean(row.menuOpen)), 'data-key': `more:${row.id}`,
-      onclick: () => { row.menuOpen = !row.menuOpen; renderCharges(); },
-    }),
     el('button', { type: 'button', class: 'x-btn', text: '×', 'aria-label': `Remove ${label}`, 'data-key': `x:${row.id}`, onclick: () => removeCharge(row, kind) })),
-  line);
+  line, err);
 
   if (isFee) {
     const mode = (even, text) => el('button', {
@@ -920,10 +1069,11 @@ function chargeRow(row, kind) {
     line.append(el('div', { class: 'chips', role: 'group', 'aria-label': `How to split ${label}` },
       mode(true, 'Split evenly'), mode(false, 'By order')));
   }
+  line.append(optButton(Boolean(row.menuOpen), `opt:${row.id}`, () => { row.menuOpen = !row.menuOpen; renderCharges(); }, `Options for ${label}`));
   if (row.menuOpen) {
-    li.append(el('div', { class: 'change-menu' }, chargeCents(row) > 0
-      ? el('button', { type: 'button', class: 'linkish', text: 'Make it an item', onclick: () => chargeToItem(row, kind) })
-      : el('span', { class: 'note', text: 'Enter an amount first.' })));
+    li.append(el('div', { class: 'opt-menu' }, chargeCents(row) > 0
+      ? optAction('Move to items', () => chargeToItem(row, kind), `toitem:${row.id}`)
+      : el('p', { class: 'opt-note', text: 'Enter an amount first.' })));
   }
   return li;
 }
@@ -976,11 +1126,14 @@ function removeCharge(row, kind) {
 
 /** Change menu: a row the reader took for a dish is really a fee or a tax line. */
 function makeCharge(item, kind) {
-  if (!(item.cents > 0) || addonsOf(item).length) return;
+  if (!item.cents) return;
   const name = item.name || (kind === 'fee' ? 'Fee' : 'Tax');
-  remember(`Made ${name} ${kind === 'fee' ? 'a fee' : 'tax'}`);
+  remember(`Made ${name} ${kind === 'fee' ? 'a fee' : 'tax'}${detachNote(item)}`);
+  const tops = topItems();
+  const next = item.addon ? byId(item.parentId) : tops[tops.indexOf(item) + 1] || tops[tops.indexOf(item) - 1];
+  if (!item.addon) detachAddons(item);
   const row = {
-    id: newId(), name, raw: centsToInput(item.cents),
+    id: newId(), name, raw: centsToInput(Math.abs(item.cents)),
     inSubtotal: !item.afterSubtotal && state.receipt.subtotalCents !== null,
   };
   if (kind === 'fee') {
@@ -992,6 +1145,8 @@ function makeCharge(item, kind) {
   }
   state.items = state.items.filter((i) => i !== item);
   renderAll();
+  // Its row is gone; land on the next one instead of the top of the page.
+  if (!(next && restoreFocus(`opt:${next.id}`))) $('item-add').focus();
 }
 
 /** The reverse: a tax or fee line back into a row people can claim. */
@@ -1023,11 +1178,13 @@ function totalField(key, label) {
       type: 'text', inputmode: 'decimal', autocomplete: 'off', placeholder: '0.00',
       value: value === null || value === undefined ? '' : centsToInput(value), 'aria-label': `Receipt ${lower}`,
     });
+    const err = el('span', { class: 'field-error', id: `err-${key}`, hidden: true });
+    guard(input, err, (v) => (badMoney(v, { negative: false }) ? `The ${lower} doesn’t look like a dollar amount.` : ''));
     const commit = () => {
       if (state.editing !== key) return;
       const raw = input.value.trim();
       const cents = raw ? parseMoney(raw) : null;
-      if (raw && (cents === null || cents < 0)) { input.setAttribute('aria-invalid', 'true'); return; }
+      if (raw && (cents === null || cents < 0)) return; // the message under the box says why
       state.editing = null;
       if (cents !== value) {
         remember(`Changed the receipt ${lower}`);
@@ -1042,8 +1199,9 @@ function totalField(key, label) {
     });
     input.addEventListener('blur', commit);
     setTimeout(() => input.focus());
-    return el('span', { class: 'total-field' }, el('span', { text: label }),
+    const field = el('span', { class: 'total-field' }, el('span', { text: label }),
       el('div', { class: 'money' }, el('span', { 'aria-hidden': 'true', text: '$' }), input));
+    return [field, err];
   }
   const shown = value === null || value === undefined ? 'not found' : formatMoney(value);
   return el('span', { class: 'total-field' }, el('span', { text: `Receipt ${lower}: ${shown}` }),
@@ -1057,7 +1215,7 @@ function renderTotals() {
   const out = $('receipt-totals');
   if (!realItems().length) { out.hidden = true; out.replaceChildren(); return; }
   out.hidden = false;
-  out.replaceChildren(totalField('subtotalCents', 'Subtotal'), totalField('totalCents', 'Total'));
+  out.replaceChildren(...[totalField('subtotalCents', 'Subtotal'), totalField('totalCents', 'Total')].flat());
 }
 
 /* -------------------------------------------------------------------- tip */
@@ -1178,18 +1336,29 @@ function payerTipField(person, p) {
     }));
 
   const detail = el('div', { class: 'payer-detail' });
+  const name = person.name;
+  const messages = {
+    paid: `What ${name} paid doesn’t look like a dollar amount.`,
+    total: `${name}'s card total doesn’t look like a dollar amount.`,
+    amt: `${name}'s tip doesn’t look like a dollar amount.`,
+  };
+  /** Returns [the box, its error line]. */
   const moneyInput = (key, label) => {
     const input = el('input', { type: 'text', inputmode: 'decimal', autocomplete: 'off', placeholder: '0.00', value: p[key], 'aria-label': label });
+    const err = el('p', { class: 'field-error', id: `err-${key}-${person.id}`, hidden: true });
+    guard(input, err, (v) => (badMoney(v, { negative: false }) ? messages[key] : ''));
     input.addEventListener('input', () => { p[key] = input.value.slice(0, 20); renderPayerCalcs(); renderResults(); });
     input.addEventListener('blur', () => {
       const c = parseMoney(input.value);
       if (c !== null && c >= 0) { input.value = centsToInput(c); p[key] = input.value; }
     });
-    return el('div', { class: 'money' }, el('span', { 'aria-hidden': 'true', text: '$' }), input);
+    return [el('div', { class: 'money' }, el('span', { 'aria-hidden': 'true', text: '$' }), input), err];
   };
 
   if (p.mode === 'percent') {
     const pctInput = el('input', { type: 'text', inputmode: 'decimal', autocomplete: 'off', value: p.pct, 'aria-label': `${person.name}'s tip percent` });
+    const pctErr = el('p', { class: 'field-error', id: `err-pct-${person.id}`, hidden: true });
+    guard(pctInput, pctErr, (v) => (badPct(v) ? `${name}'s tip percent should be a number from 0 to 100.` : ''));
     const presets = el('div', { class: 'chips' }, ...[15, 18, 20, 22].map((n) => el('button', {
       type: 'button', class: 'chip', 'aria-pressed': String(parsePercent(p.pct) === n), text: `${n}%`,
       onclick: () => { p.pct = String(n); rerender(); },
@@ -1200,11 +1369,11 @@ function payerTipField(person, p) {
       renderPayerCalcs();
       renderResults();
     });
-    detail.append(presets, el('div', { class: 'money pct' }, pctInput, el('span', { 'aria-hidden': 'true', text: '%' })));
+    detail.append(presets, el('div', { class: 'money pct' }, pctInput, el('span', { 'aria-hidden': 'true', text: '%' })), pctErr);
   } else if (p.mode === 'amount') {
-    detail.append(moneyInput('amt', `${person.name}'s tip`));
+    detail.append(...moneyInput('amt', `${person.name}'s tip`));
   } else {
-    detail.append(moneyInput('total', `${person.name}'s card total, tip included`));
+    detail.append(...moneyInput('total', `${person.name}'s card total, tip included`));
   }
   detail.append(el('p', { class: 'payer-calc', 'data-calc': person.id, 'aria-live': 'polite' }));
   return { seg, detail, moneyInput };
@@ -1220,9 +1389,12 @@ function renderPayers() {
   $('payer-blocks').replaceChildren(...payers().map((person) => {
     const p = payEntry(person.id);
     const { seg, detail, moneyInput } = payerTipField(person, p);
+    const [paidBox, paidErr] = p.mode === 'total' ? [null, null] : moneyInput('paid', `What ${person.name} paid, before tip`);
+    if (paidErr) paidErr.classList.add('payer-err');
     return el('div', { class: 'payer-block' },
       el('h3', { text: person.name }),
-      p.mode === 'total' ? null : el('div', { class: 'payer-row' }, el('span', { text: 'Paid' }), moneyInput('paid', `What ${person.name} paid, before tip`)),
+      paidBox ? el('div', { class: 'payer-row' }, el('span', { text: 'Paid' }), paidBox) : null,
+      paidErr,
       el('div', { class: 'payer-row' }, el('span', { text: 'Tip' }), seg),
       detail);
   }));
@@ -1235,7 +1407,7 @@ function renderPayerCalcs() {
     const out = document.querySelector(`[data-calc="${person.id}"]`);
     if (!out) continue;
     const r = readCard(person);
-    if (r.error) { out.textContent = r.empty ? '' : r.error; continue; }
+    if (r.error) { out.textContent = ''; continue; } // the box itself shows what's wrong
     out.textContent = r.tip === null ? `Card total ${formatMoney(r.card)}` : `Tip ${formatMoney(r.tip)} · card total ${formatMoney(r.card)}`;
   }
 }
@@ -1423,20 +1595,23 @@ function renderTotalCalc() {
   const out = $('tip-total-calc');
   if (state.tipMode !== 'total' || multiPay()) { out.textContent = ''; return; }
   const r = readSingleTip(readTax() ?? 0, readFee() ?? 0, readDisc() ?? 0);
-  if (r.error) { out.textContent = $('tip-total').value.trim() ? r.error : ''; return; }
+  if (r.error) { out.textContent = $('tip-total').value.trim() && !badMoney($('tip-total').value, { negative: false }) ? r.error : ''; return; }
   const pct = pctOfFood(r.cents);
   out.textContent = `Tip works out to ${formatMoney(r.cents)}${pct ? ` (${pct})` : ''}`;
 }
 
 function renderResults() {
   const disc = readDisc();
-  $('disc').setAttribute('aria-invalid', String(disc === null));
+  for (const check of staticChecks) check(); // values can change without typing (presets, Undo, a new receipt)
   $('disc-to-row').hidden = !(disc > 0);
   renderTotalCalc();
   renderCardsLine();
 
   const g = gather();
   const blockedEl = $('results-blocked');
+  blockedEl.classList.toggle('done', !g.block);
+  if (!g.block && !state.wasDone) announce('Everything’s assigned.');
+  state.wasDone = !g.block;
   if (g.block) {
     blockedEl.replaceChildren(
       g.block.id ? el('button', { type: 'button', class: 'blocked-link', text: g.block.text, onclick: () => jumpTo(g.block.id) }) : g.block.text
@@ -1447,7 +1622,7 @@ function renderResults() {
     $('copy-all').hidden = true;
     return;
   }
-  blockedEl.replaceChildren();
+  blockedEl.replaceChildren('Everything’s assigned.');
 
   const forSplit = realItems().map((i) => ({ ...i, name: qtyName(i) }));
   const feeEven = readFeeEven() ?? 0;
@@ -1775,10 +1950,29 @@ async function readImage(worker, canvas) {
   return bestParse(linesFromBlocks(data.blocks), textFromWords(wordsFromBlocks(data.blocks)), data.text || '');
 }
 
+/** Our own confirmation box. Resolves true for the action button, false for Cancel, Esc or a tap outside. */
+function confirmDialog({ title, body, action }) {
+  const dlg = $('confirm');
+  if (typeof dlg.showModal !== 'function') return Promise.resolve(window.confirm(`${title} ${body}`));
+  $('confirm-title').textContent = title;
+  $('confirm-body').textContent = body;
+  $('confirm-ok').textContent = action;
+  dlg.returnValue = '';
+  return new Promise((resolve) => {
+    dlg.addEventListener('close', () => resolve(dlg.returnValue === 'ok'), { once: true });
+    dlg.showModal();
+    $('confirm-cancel').focus();
+  });
+}
+
 /** A new reading replaces the list, so ask first if anyone's already been assigned. */
-function confirmReplace() {
+async function confirmReplace() {
   if (!state.items.some((i) => i.assigned.size > 0)) return true;
-  return window.confirm('Reading a new photo replaces the item list and who had what. Go ahead?');
+  return confirmDialog({
+    title: 'Replace the items?',
+    body: 'Reading this receipt replaces the item list and who had what.',
+    action: 'Replace',
+  });
 }
 
 async function scan(file) {
@@ -1792,12 +1986,14 @@ async function scan(file) {
     showError('That photo is over 25 MB. Take a new one or use a smaller copy.');
     return;
   }
-  if (!confirmReplace()) return;
+  if (!(await confirmReplace())) return;
+  const snap = snapshot();
   dropPhoto();
   state.photo = file;
   state.previewUrl = URL.createObjectURL(file);
   $('preview-img').src = state.previewUrl;
-  await read(async () => decodeImage(file));
+  const had = realItems().length > 0; // a first reading has nothing to go back to
+  if ((await read(async () => decodeImage(file))) && had) remember('Read a new receipt', { snap });
 }
 
 /**
@@ -1864,7 +2060,7 @@ async function read(getSource, { darker = false } = {}) {
         if (token !== state.scanToken) return false;
         if (scoreParse(other) > scoreParse(parsed)) parsed = other;
       }
-      // It added up, but faint print (like "2 @ $9.50" under a dish) may have been skipped.
+      // It added up, but faint print (like "2 @ $8.25" under a dish) may have been skipped.
       if (pass === 1 && scoreParse(parsed) >= 10000 && faintInk(evened)) {
         pass++;
         const canvas = darkCanvas(evened);
@@ -1897,7 +2093,7 @@ async function read(getSource, { darker = false } = {}) {
 
 /** Read the same photo again with darker grays, with one tap to go back. */
 async function scanAgain() {
-  if (!state.lastRead || !confirmReplace()) return;
+  if (!state.lastRead || !(await confirmReplace())) return;
   const snap = snapshot();
   const worked = await read(state.lastRead, { darker: true });
   if (worked) remember('Scanned again with darker grays', { snap, sticky: true });
@@ -1911,7 +2107,6 @@ function resetTip() {
 }
 
 function applyParsed(parsed, { append = false, noteEl = $('receipt-note') } = {}) {
-  hideUndo();
   state.items = append ? state.items.filter((i) => !isBlank(i)) : [];
   let room = LIMITS.items - state.items.length;
   const created = [];
@@ -1966,17 +2161,19 @@ function applyParsed(parsed, { append = false, noteEl = $('receipt-note') } = {}
     noteEl.textContent = 'This looks like the card slip, not the itemized check. Take a photo of the check that lists the dishes.';
   } else if (dishes + extras + discounts === 0) {
     noteEl.textContent = append
-      ? 'No prices found in that text. Each item needs its price on the same line, like “Iced Tea 3.75”.'
+      ? 'No prices found in that text. Each item needs its price on the same line, like “Iced Tea 3.25”.'
       : 'No prices found in that photo. Try a sharper shot or crop it, or add the items by hand below.';
   } else {
     const found = [`${dishes} item${dishes === 1 ? '' : 's'}`];
     if (extras) found.push(`${extras} add-on${extras === 1 ? '' : 's'}`);
     if (discounts) found.push(`${discounts} discount${discounts === 1 ? '' : 's'}`);
-    const bits = [`Found ${listAnd(found)}`];
-    if (parsed.taxCents !== null) bits.push(`${formatMoney(parsed.taxCents)} tax`);
-    if (parsed.feeCents) bits.push(`${formatMoney(parsed.feeCents)} in fees`);
-    if (parsed.tipCents !== null) bits.push(`${formatMoney(parsed.tipCents)} ${parsed.gratuity ? 'gratuity' : 'tip'}`);
-    noteEl.textContent = `${bits.join(', ')}. Check them against the ${append ? 'receipt' : 'photo'} before splitting.`;
+    // "Found 3 items. Subtotal $78.25 · Tax $6.65 · Fees $4.29 · Total $84.90."
+    const amount = (c) => (c === null || c === undefined ? 'not found' : formatMoney(c));
+    const figures = [`Subtotal ${amount(parsed.subtotalCents)}`, `Tax ${amount(parsed.taxCents)}`];
+    if (parsed.feeCents) figures.push(`Fees ${formatMoney(parsed.feeCents)}`);
+    if (parsed.tipCents !== null && parsed.tipCents > 0) figures.push(`${parsed.gratuity ? 'Gratuity' : 'Tip'} ${formatMoney(parsed.tipCents)}`);
+    figures.push(`Total ${amount(parsed.totalCents)}`);
+    noteEl.textContent = `Found ${listAnd(found)}. ${figures.join(' · ')}.`;
   }
 
   renderTipNote();
@@ -2127,7 +2324,10 @@ function rotateCrop() {
 
 async function readCrop() {
   if (!crop.img) return;
-  if (!confirmReplace()) return;
+  if (!(await confirmReplace())) return;
+  if (!crop.img) return;
+  const snap = snapshot();
+  const had = realItems().length > 0;
   const img = crop.img;
   crop.img = null; // the reader owns it now
   const r = state.crop;
@@ -2136,7 +2336,7 @@ async function readCrop() {
   const canvas = $('crop-canvas');
   canvas.width = 0;
   canvas.height = 0;
-  await read(async () => {
+  const worked = await read(async () => {
     // Cut the crop out of the turned photo at full resolution (capped at 3000px).
     const { w, h } = srcSize(img);
     const rw = state.rotation % 180 ? h : w;
@@ -2155,6 +2355,7 @@ async function readCrop() {
     if (typeof img.close === 'function') img.close();
     return out;
   });
+  if (worked && had) remember('Read the cropped receipt', { snap });
 }
 
 /* ------------------------------------------------------------------- paste */
@@ -2171,17 +2372,22 @@ function readPasted() {
   const raw = $('paste-text').value.slice(0, LIMITS.pasteChars);
   if (!raw.trim()) { $('paste-text').focus(); return; }
   const parsed = bestParse(raw, pairColumns(raw));
+  const snap = snapshot();
+  const had = realItems().length > 0;
   applyParsed(parsed, { append: true, noteEl: $('paste-note') });
-  if (parsed.items.length) setPasteOpen(false); // clears the box
+  if (parsed.items.length && had) remember(`Added ${parsed.items.length} line${parsed.items.length === 1 ? '' : 's'} from the text`, { snap });
+  if (parsed.items.length) {
+    setPasteOpen(false); // clears the box
+  }
 }
 
 /* ------------------------------------------------------------------- reset */
 
-function resetAll() {
+async function resetAll() {
   const hasData = state.people.length || state.items.length || state.previewUrl;
-  if (hasData && !window.confirm('Clear everything and start over?')) return;
+  if (hasData && !(await confirmDialog({ title: 'Start over?', body: 'This clears everything on the page.', action: 'Start over' }))) return;
+  const snap = snapshot();
   state.scanToken++;
-  hideUndo();
   dropPhoto();
   state.people = [];
   state.payerIds = new Set();
@@ -2205,6 +2411,8 @@ function resetAll() {
   showError('');
   showReceiptState('empty');
   renderAll();
+  // Everything typed comes back with Undo. The photo doesn't: it's let go of right away.
+  if (hasData) remember('Started over', { snap });
   window.scrollTo({ top: 0 });
 }
 
@@ -2236,15 +2444,20 @@ $('crop-stage').addEventListener('pointermove', onCropPointerMove);
 $('crop-stage').addEventListener('pointerup', onCropPointerUp);
 $('crop-stage').addEventListener('pointercancel', onCropPointerUp);
 document.querySelectorAll('#crop-box .handle').forEach((h) => h.addEventListener('keydown', onHandleKey));
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('crop').hidden) closeCrop(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('crop').hidden && !$('confirm').open) closeCrop(); });
 window.addEventListener('resize', () => { if (!$('crop').hidden && crop.img) drawCrop(); });
 
-$('manual').addEventListener('click', () => addItem());
 $('item-add').addEventListener('click', () => addItem());
 $('person-add').addEventListener('click', addPerson);
 $('person-name').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') { e.preventDefault(); addPerson(); }
 });
+const staticChecks = [
+  guard($('disc'), $('disc-err'), (v) => (badMoney(v) ? 'The discount doesn’t look like a dollar amount.' : '')),
+  guard($('tip-pct'), $('tip-pct-err'), (v) => (badPct(v) ? 'The tip percent should be a number from 0 to 100.' : '')),
+  guard($('tip-amt'), $('tip-amt-err'), (v) => (badMoney(v, { negative: false }) ? 'The tip amount doesn’t look like a dollar amount.' : '')),
+  guard($('tip-total'), $('tip-total-err'), (v) => (badMoney(v, { negative: false }) ? 'The total doesn’t look like a dollar amount.' : '')),
+];
 for (const id of ['disc', 'tip-total']) {
   $(id).addEventListener('input', () => { renderPayerCalcs(); renderResults(); });
   $(id).addEventListener('blur', () => {
@@ -2278,7 +2491,12 @@ document.querySelectorAll('#tip-presets .chip').forEach((b) => {
 document.querySelectorAll('input[name="tip-mode"]').forEach((r) => {
   r.addEventListener('change', () => setTipMode(r.value));
 });
-$('undo-btn').addEventListener('click', undo);
+$('undo-btn').addEventListener('click', () => undo());
+$('undo-step').addEventListener('click', () => undo({ fromButton: true }));
+$('confirm-ok').addEventListener('click', () => $('confirm').close('ok'));
+$('confirm-cancel').addEventListener('click', () => $('confirm').close('cancel'));
+// A tap on the dimmed page around the box counts as Cancel.
+$('confirm').addEventListener('click', (e) => { if (e.target === $('confirm')) $('confirm').close('cancel'); });
 $('undo-close').addEventListener('click', hideUndo);
 const undoBar = $('undo-bar');
 undoBar.addEventListener('pointerenter', () => { state.undoHover = true; armUndo(); });
@@ -2296,7 +2514,7 @@ document.addEventListener('pointerdown', (e) => {
 });
 // After Scan again the toast stays until the next tap somewhere else.
 document.addEventListener('click', (e) => {
-  if (state.undoSticky && state.undo && !undoBar.contains(e.target) && e.target.id !== 'scan-again') hideUndo();
+  if (state.undoSticky && !undoBar.hidden && !undoBar.contains(e.target) && e.target.id !== 'scan-again') hideUndo();
 });
 $('reset').addEventListener('click', resetAll);
 $('paste-toggle').addEventListener('click', () => { $('paste-note').textContent = ''; setPasteOpen(true); });

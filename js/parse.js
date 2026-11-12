@@ -156,7 +156,7 @@ function takeQuantity(label, printsQty = false, colQty = false) {
     if (pre[2] || qty === 1 || printsQty || unit || symbolNext) s = s.slice(pre[0].length); // clearly a quantity
     else qtyGuess = true; // keep "7 Layer Dip" whole
   }
-  const col = colQty && !pre ? s.match(COL_QTY) : null; // "Burger   2   24.00"
+  const col = colQty && !pre ? s.match(COL_QTY) : null; // "Burger   2   26.00"
   if (col && Number(col[1]) >= 1 && Number(col[1]) <= 20) {
     qty = Number(col[1]);
     s = s.slice(0, col.index);
