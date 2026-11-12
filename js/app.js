@@ -12,11 +12,10 @@ const state = {
   tipMode: 'percent',
   receipt: { subtotalCents: null, totalCents: null },
   gratuityFromReceipt: false,
-  discNames: [], // names of discounts moved into the Discounts field
-  photo: null, // the picked File, kept in memory only so it can be cropped
-  previewUrl: null,
-  rotation: 0,
-  crop: null, // { x, y, w, h } as fractions of the rotated photo
+  discounts: [], // { id, name, raw } rows in the Discounts list (whole-bill discounts, shared by order)
+  photos: [], // see newPhoto(); memory only
+  found: null, // the receipt's own figures as read from the photos: { sub, tax, fee, tip, gratuity, total }
+  note: null, // the note under the photos, see renderNote()
   scanToken: 0,
   history: [], // [{ snap, text }], newest last, for Undo
   undoTimer: 0,
@@ -26,7 +25,6 @@ const state = {
   taxes: [], // { id, name, raw, inSubtotal } rows in the Tax list (raw = text in the amount box)
   fees: [], // { id, name, raw, even, inSubtotal } rows in the Fees list
   tipEven: false,
-  lastRead: null, // how the current photo was last read, for Scan again
   receiptShown: false,
   editing: null, // 'subtotalCents' | 'totalCents' while that receipt figure is being edited
   wasDone: false, // last results check found nothing missing
@@ -195,10 +193,10 @@ function snapshot() {
     tipMode: state.tipMode,
     tip: { pct: $('tip-pct').value, amt: $('tip-amt').value, total: $('tip-total').value },
     gratuity: state.gratuityFromReceipt,
-    disc: $('disc').value,
-    discShown: !$('disc-wrap').hidden,
-    discNames: [...state.discNames],
-    note: $('receipt-note').textContent,
+    discounts: state.discounts.map((r) => ({ ...r })),
+    photos: [...state.photos],
+    found: state.found ? { ...state.found } : null,
+    note: state.note,
     focusKey: focusKey(),
   };
 }
@@ -210,6 +208,7 @@ const HISTORY_MAX = 20;
 function remember(text, { snap = snapshot(), sticky = false } = {}) {
   state.history.push({ snap, text });
   if (state.history.length > HISTORY_MAX) state.history.shift();
+  releasePhotos();
   state.undoSticky = sticky;
   $('undo-text').textContent = text;
   $('undo-bar').hidden = false;
@@ -269,20 +268,21 @@ function undo({ fromButton = false } = {}) {
   state.fees = snap.fees;
   state.receipt = snap.receipt;
   state.tipEven = snap.tipEven;
-  state.discNames = snap.discNames;
+  state.discounts = snap.discounts;
+  state.photos = snap.photos;
+  state.found = snap.found;
+  state.note = snap.note;
   state.gratuityFromReceipt = snap.gratuity;
   state.editing = null;
-  $('disc').value = snap.disc;
   $('tip-pct').value = snap.tip.pct;
   $('tip-amt').value = snap.tip.amt;
   $('tip-total').value = snap.tip.total;
-  $('receipt-note').textContent = snap.note;
-  showDisc(snap.discShown);
   syncTipPresets();
   hideUndo();
   setTipMode(snap.tipMode);
   renderAll();
   renderUndoButton();
+  releasePhotos();
   if (fromButton) {
     // Stay at the bottom of the page instead of jumping back up to where the change was made.
     if (state.history.length) $('undo-step').focus();
@@ -594,7 +594,7 @@ function itemInputs(item, label) {
 
 function closeAddon(addon) {
   const kept = addon.name || addon.cents !== null || addon.rawPrice;
-  if (kept) { addon.open = false; addon.menuOpen = false; }
+  if (kept) addon.open = false;
   else state.items = state.items.filter((i) => i !== addon); // an empty add-on is just discarded
   renderItems();
   renderResults();
@@ -712,11 +712,11 @@ function kindRow(item, kinds, needsPrice) {
   return row;
 }
 
-/** The "Options" link at the end of a price line. */
+/** The "Options" link at the end of a price line. ▸ when closed, ▾ when open (the usual show/hide arrows). */
 function optButton(open, key, onclick, label) {
   return el('button', {
     type: 'button', class: 'linkish opt-btn', 'aria-expanded': String(open), 'data-key': key, 'aria-label': label, onclick,
-  }, 'Options', open ? el('span', { 'aria-hidden': 'true', text: ' ▴' }) : null);
+  }, 'Options', el('span', { class: 'opt-arrow', 'aria-hidden': 'true', text: open ? ' ▾' : ' ▸' }));
 }
 
 function renderAddon(addon, parent) {
@@ -730,9 +730,8 @@ function renderAddon(addon, parent) {
       el('span', { class: 'addon-price', text: addon.cents === null ? '—' : formatMoney(addon.cents) }),
       optButton(false, `addon:${addon.id}`, () => {
         addon.open = true;
-        addon.menuOpen = true;
         rerender();
-        restoreFocus(`done:${addon.id}`);
+        restoreFocus(`addon:${addon.id}`);
       }, `Options for ${name}`)
     ));
     return li;
@@ -744,18 +743,16 @@ function renderAddon(addon, parent) {
       el('button', { type: 'button', class: 'x-btn', 'aria-label': 'Remove add-on', text: '×', 'data-key': `x:${addon.id}`, onclick: () => removeItem(addon.id) })),
     el('div', { class: 'item-price' },
       el('div', { class: 'money' }, el('span', { 'aria-hidden': 'true', text: '$' }), priceInput),
-      el('button', { type: 'button', class: 'linkish opt-btn', text: 'Done', 'data-key': `done:${addon.id}`, onclick: () => closeAddon(addon) })),
+      optButton(true, `addon:${addon.id}`, () => closeAddon(addon), `Options for ${name}`)),
     priceErr
   );
-  if (addon.menuOpen) {
-    li.append(el('div', { class: 'opt-menu' },
-      optAction(`Detach from ${parent.name || 'this dish'}`, () => makeOwnItem(addon), `detach:${addon.id}`),
-      kindRow(addon, [
-        ['Add-on', true, null],
-        ['Fee', false, () => makeCharge(addon, 'fee')],
-        ['Tax', false, () => makeCharge(addon, 'tax')],
-      ], true)));
-  }
+  li.append(el('div', { class: 'opt-menu' },
+    optAction(`Detach from ${parent.name || 'this dish'}`, () => makeOwnItem(addon), `detach:${addon.id}`),
+    kindRow(addon, [
+      ['Add-on', true, null],
+      ['Fee', false, () => makeCharge(addon, 'fee')],
+      ['Tax', false, () => makeCharge(addon, 'tax')],
+    ], true)));
   return li;
 }
 
@@ -937,59 +934,32 @@ function readMoneyField(id) {
   return cents !== null && cents >= 0 ? cents : null;
 }
 
-function readDisc() {
-  if ($('disc-wrap').hidden) return 0;
-  const raw = $('disc').value.trim();
-  if (!raw) return 0;
-  const cents = parseMoney(raw);
-  return cents === null ? null : Math.abs(cents); // "-10" and "10" both mean $10 off
-}
-
-function showDisc(show) {
-  $('disc-wrap').hidden = !show;
-  $('disc-show').hidden = show;
-  renderDiscNote();
-}
-function renderDiscNote() {
-  const names = state.discNames;
-  $('disc-note').textContent = names.length
-    ? `${listAnd(names)}, spread by what each person ordered.`
-    : 'Coupons and other discounts on the whole bill, spread by what each person ordered.';
-  $('disc-to-row').hidden = !(readDisc() > 0);
-}
+/** Whole-bill discounts, as a positive number of cents ("-5" and "5" both mean $5 off). */
+const readDisc = () => sumCharges(state.discounts);
 
 function spreadDiscount(item) {
   remember(`Spread ${itemLabel(item)} over the whole bill`);
-  const current = readDisc() ?? 0;
-  $('disc').value = centsToInput(current + Math.abs(item.cents));
-  if (item.name) state.discNames.push(item.name);
+  state.discounts.push({ id: newId(), name: item.name || 'Discount', raw: centsToInput(Math.abs(item.cents)) });
   for (const a of addonsOf(item)) { a.addon = false; a.parentId = null; }
+  const tops = topItems();
+  const next = tops[tops.indexOf(item) + 1] || tops[tops.indexOf(item) - 1];
   state.items = state.items.filter((i) => i !== item);
-  showDisc(true);
+  renderCharges();
   renderItems();
   renderResults();
-}
-
-function discountToRow() {
-  const amount = readDisc();
-  if (!amount) return;
-  remember('Made the discount a line item');
-  const name = state.discNames.length === 1 ? state.discNames[0] : 'Discount';
-  const row = makeItem({ name, cents: -amount });
-  state.items.push(row);
-  $('disc').value = '';
-  state.discNames = [];
-  showDisc(false);
-  renderItems();
-  renderResults();
-  jumpTo(row.id);
+  if (!(next && restoreFocus(`opt:${next.id}`))) $('item-add').focus();
 }
 
 /* ----------------------------------------------------------- tax and fees */
 
 const blankTax = () => ({ id: newId(), name: 'Tax', raw: '', inSubtotal: false });
-const chargeList = (kind) => (kind === 'fee' ? state.fees : state.taxes);
-const chargeLabel = (row, kind) => row.name || (kind === 'fee' ? 'Fee' : 'Tax');
+const KIND = {
+  tax: { list: 'taxes', label: 'Tax', name: 'Tax name', a: 'a tax line', what: 'tax amount' },
+  fee: { list: 'fees', label: 'Fee', name: 'Fee name', a: 'a fee', what: 'fee amount' },
+  disc: { list: 'discounts', label: 'Discount', name: 'Discount name', a: 'a discount', what: 'discount' },
+};
+const chargeList = (kind) => state[KIND[kind].list];
+const chargeLabel = (row, kind) => row.name || KIND[kind].label;
 
 /** A row's amount in cents: 0 when blank, null when it isn't a dollar amount. */
 function chargeCents(row) {
@@ -1027,7 +997,7 @@ function chargeRow(row, kind) {
   const label = chargeLabel(row, kind);
   const nameInput = el('input', {
     type: 'text', class: 'charge-name', maxlength: '40', autocomplete: 'off', value: row.name,
-    placeholder: isFee ? 'Fee name' : 'Tax name', 'aria-label': isFee ? 'Fee name' : 'Tax name',
+    placeholder: KIND[kind].name, 'aria-label': KIND[kind].name,
   });
   nameInput.addEventListener('input', () => { row.name = nameInput.value.slice(0, 40); });
   nameInput.addEventListener('blur', () => { row.name = cleanText(nameInput.value, 40); nameInput.value = row.name; renderResults(); });
@@ -1037,7 +1007,7 @@ function chargeRow(row, kind) {
     'aria-label': `${label} amount`,
   });
   const err = el('p', { class: 'field-error', id: `err-${row.id}`, hidden: true });
-  guard(amount, err, (v) => (badMoney(v) ? `The ${isFee ? 'fee' : 'tax'} amount doesn’t look like a dollar amount.` : ''));
+  guard(amount, err, (v) => (badMoney(v) ? `The ${KIND[kind].what} doesn’t look like a dollar amount.` : ''));
   amount.addEventListener('input', () => {
     row.raw = amount.value.slice(0, 12);
     renderChargeSums();
@@ -1083,6 +1053,8 @@ function renderChargeSums() {
   const f = readFee();
   $('tax-sum').textContent = state.taxes.length > 1 && t !== null ? `Total tax ${formatMoney(t)}` : '';
   $('fee-sum').textContent = state.fees.length > 1 && f !== null ? `Total fees ${formatMoney(f)}` : '';
+  const d = readDisc();
+  $('disc-sum').textContent = state.discounts.length > 1 && d !== null ? `Total discounts ${formatMoney(d)}` : '';
 }
 
 function renderCharges() { keepFocus(drawCharges); }
@@ -1093,27 +1065,30 @@ function drawCharges() {
   const hasFees = state.fees.length > 0;
   $('fee-block').hidden = !hasFees;
   $('fee-show').hidden = hasFees;
+  $('disc-list').replaceChildren(...state.discounts.map((r) => chargeRow(r, 'disc')));
+  const hasDisc = state.discounts.length > 0;
+  $('disc-block').hidden = !hasDisc;
+  $('disc-show').hidden = hasDisc;
   renderChargeSums();
 }
 
 function addCharge(kind) {
   const list = chargeList(kind);
   if (list.length >= 20) return;
-  const row = kind === 'fee'
-    ? { id: newId(), name: '', raw: '', even: false, inSubtotal: false }
-    : { ...blankTax(), name: '' };
+  const row = kind === 'fee' ? { id: newId(), name: '', raw: '', even: false, inSubtotal: false }
+    : kind === 'disc' ? { id: newId(), name: '', raw: '' }
+      : { ...blankTax(), name: '' };
   list.push(row);
   renderCharges();
   refocus(`[data-charge="${row.id}"] .charge-name`);
 }
 
 function removeCharge(row, kind) {
-  remember(`Removed ${row.name || (kind === 'fee' ? 'a fee' : 'a tax line')}`);
+  remember(`Removed ${row.name || KIND[kind].a}`);
   const list = chargeList(kind);
   const at = list.indexOf(row);
   const next = list[at + 1] || list[at - 1];
-  if (kind === 'fee') state.fees = state.fees.filter((r) => r !== row);
-  else state.taxes = state.taxes.filter((r) => r !== row);
+  state[KIND[kind].list] = list.filter((r) => r !== row);
   renderCharges();
   renderCheck();
   renderPayerCalcs();
@@ -1121,6 +1096,7 @@ function removeCharge(row, kind) {
   const field = next && document.querySelector(`[data-charge="${next.id}"] .charge-name`);
   if (field) field.focus();
   else if (kind === 'fee') $('fee-show').focus();
+  else if (kind === 'disc') $('disc-show').focus();
   else refocus('#tax-list .charge-name');
 }
 
@@ -1154,9 +1130,12 @@ function chargeToItem(row, kind) {
   const cents = chargeCents(row);
   if (!cents || state.items.length >= LIMITS.items) return;
   remember(`Made ${chargeLabel(row, kind)} an item`);
-  const item = makeItem({ name: row.name, cents, afterSubtotal: !row.inSubtotal && state.receipt.subtotalCents !== null });
-  if (kind === 'fee') state.fees = state.fees.filter((r) => r !== row);
-  else state.taxes = state.taxes.filter((r) => r !== row);
+  const isDisc = kind === 'disc';
+  const item = makeItem({
+    name: row.name || (isDisc ? 'Discount' : ''), cents: isDisc ? -cents : cents,
+    afterSubtotal: isDisc || (!row.inSubtotal && state.receipt.subtotalCents !== null),
+  });
+  state[KIND[kind].list] = state[KIND[kind].list].filter((r) => r !== row);
   state.items.push(item);
   renderAll();
   jumpTo(item.id);
@@ -1603,7 +1582,6 @@ function renderTotalCalc() {
 function renderResults() {
   const disc = readDisc();
   for (const check of staticChecks) check(); // values can change without typing (presets, Undo, a new receipt)
-  $('disc-to-row').hidden = !(disc > 0);
   renderTotalCalc();
   renderCardsLine();
 
@@ -1702,21 +1680,46 @@ function renderResults() {
 
 function renderAll() {
   renderPeople();
-  renderReceiptView();
   renderCharges();
   renderTipSplit();
   renderItems();
   renderPayers();
   renderResults();
+  renderPhotos();
 }
 
 /* ---------------------------------------------------------------- scanning */
 
+/*
+ * Photos of the receipt, in memory only. A long receipt can be several photos ("parts").
+ * Each record is fixed once made: a new crop makes a new record, so Undo can go back to the old one.
+ * photo = { id, file, url, cropUrl, crop, rotation }
+ */
+const photoPool = new Set();
+
+function newPhoto(file, { crop = null, rotation = 0 } = {}) {
+  const photo = { id: newId(), file, url: URL.createObjectURL(file), cropUrl: null, crop, rotation };
+  photoPool.add(photo);
+  return photo;
+}
+const shownUrl = (photo) => photo.cropUrl || photo.url;
+
+/** Let go of photos that nothing (the page or an Undo step) points at any more. */
+function releasePhotos() {
+  const live = new Set(state.photos);
+  for (const step of state.history) for (const ph of step.snap.photos || []) live.add(ph);
+  for (const ph of [...photoPool]) {
+    if (live.has(ph)) continue;
+    URL.revokeObjectURL(ph.url);
+    if (ph.cropUrl) URL.revokeObjectURL(ph.cropUrl);
+    photoPool.delete(ph);
+  }
+}
+
+let busy = false;
 function showReceiptState(which) {
-  $('receipt-empty').hidden = which !== 'empty';
-  $('receipt-busy').hidden = which !== 'busy';
-  $('receipt-done').hidden = which !== 'done';
-  $('paste').hidden = which === 'busy';
+  busy = which === 'busy';
+  renderPhotos();
 }
 
 function showError(msg) {
@@ -1725,31 +1728,97 @@ function showError(msg) {
   e.hidden = !msg;
 }
 
-function dropPhoto() {
-  if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
-  state.previewUrl = null;
-  state.photo = null;
-  state.rotation = 0;
-  state.crop = null;
-  state.lastRead = null;
-  state.receiptShown = false;
-  $('preview-img').removeAttribute('src');
+/** Step 1: the photo or photos, the note, and which buttons show. */
+function renderPhotos() {
+  const has = state.photos.length > 0;
+  $('receipt-busy').hidden = !busy;
+  $('receipt-empty').hidden = busy || has;
+  $('receipt-done').hidden = busy || !has;
+  // Typing or pasting is for when there's no photo, or the photo gave nothing to work with.
+  $('paste').hidden = busy || (has && realItems().length > 0);
+  const preview = $('preview');
+  if (state.photos.length === 1) {
+    preview.className = 'preview';
+    preview.replaceChildren(el('img', { src: shownUrl(state.photos[0]), alt: 'Your receipt photo' }));
+  } else {
+    preview.className = 'preview parts';
+    preview.replaceChildren(...state.photos.map((ph, i) => el('figure', { class: 'part' },
+      el('img', { src: shownUrl(ph), alt: `Receipt photo ${i + 1}` }),
+      el('figcaption', { text: `Photo ${i + 1}` }))));
+  }
+  renderNote($('receipt-note'), state.note);
   renderReceiptView();
 }
 
-/** "Show receipt" in step 3, so prices can be checked against the photo. Memory only. */
+/** "Show receipt" in step 3, so prices can be checked against the photos (cropped if cropped). */
 function renderReceiptView() {
-  const has = Boolean(state.previewUrl);
+  const has = state.photos.length > 0;
   if (!has) state.receiptShown = false;
   $('receipt-view').hidden = !has;
-  $('receipt-big').hidden = !state.receiptShown;
-  const img = $('receipt-big-img');
-  if (state.receiptShown) { if (img.getAttribute('src') !== state.previewUrl) img.src = state.previewUrl; } else img.removeAttribute('src');
+  const big = $('receipt-big');
+  big.hidden = !state.receiptShown;
+  big.replaceChildren(...(state.receiptShown
+    ? state.photos.map((ph, i) => el('img', { src: shownUrl(ph), alt: state.photos.length > 1 ? `Receipt photo ${i + 1}` : 'Your receipt photo', id: i === 0 ? 'receipt-big-img' : null }))
+    : []));
   const toggle = $('receipt-toggle');
   toggle.textContent = state.receiptShown ? 'Hide receipt' : 'Show receipt';
   toggle.setAttribute('aria-expanded', String(state.receiptShown));
-  $('scan-again').hidden = !state.lastRead;
 }
+
+/*
+ * The note after a reading: what was found, the receipt's own figures, and a heads-up
+ * line when something needs attention. note = { found, figs: [[label, cents|null]], heads: [[text | { link }]] }
+ */
+function renderNote(out, note) {
+  out.replaceChildren();
+  if (!note) return;
+  if (note.found) out.append(el('span', { class: 'note-found', text: note.found }));
+  if (note.figs) {
+    out.append(el('span', { class: 'note-figs' }, ...note.figs.map(([label, cents]) => el('span', { class: 'fig' },
+      el('span', { class: 'fig-label', text: label }),
+      el('span', { class: 'fig-val', text: cents === null || cents === undefined ? '—' : formatMoney(cents) },
+        cents === null || cents === undefined ? el('span', { class: 'sr-only', text: ' not found' }) : null)))));
+  }
+  if (note.heads && note.heads.length) {
+    out.append(el('span', { class: 'note-heads' }, ...note.heads.map((line) => el('span', { class: 'head' },
+      ...line.map((seg) => (typeof seg === 'string' ? seg
+        : el('button', { type: 'button', class: 'quiet-link inline', text: 'Add the rest of the receipt', onclick: () => $('photo-add').click() })))))));
+  }
+}
+
+/** The note for everything read from photos so far. */
+function photoNote(heads = []) {
+  const fromPhotos = state.items.filter((i) => i.photoId);
+  if (!fromPhotos.length) return { found: null, figs: null, heads };
+  const f = state.found;
+  const lines = [...heads];
+  if ((f.sub === null || f.sub === undefined) && (f.total === null || f.total === undefined)) lines.push(['Looks cut off. ', { link: 'add' }]);
+  return { found: foundText(fromPhotos), figs: figsOf(f), heads: lines };
+}
+
+/** "Found 9 items, 1 add-on and 2 discounts" */
+function foundText(items) {
+  const dishes = items.filter((i) => !(i.addon && byId(i.parentId)) && !(i.cents < 0)).length;
+  const extras = items.filter((i) => i.addon && byId(i.parentId)).length;
+  const discounts = items.filter((i) => !(i.addon && byId(i.parentId)) && i.cents < 0).length;
+  const parts = [`${dishes} item${dishes === 1 ? '' : 's'}`];
+  if (extras) parts.push(`${extras} add-on${extras === 1 ? '' : 's'}`);
+  if (discounts) parts.push(`${discounts} discount${discounts === 1 ? '' : 's'}`);
+  return `Found ${listAnd(parts)}`;
+}
+
+function figsOf(f) {
+  const figs = [['Subtotal', f.sub], ['Tax', f.tax]];
+  if (f.fee) figs.push(['Fees', f.fee]);
+  if (f.tip > 0) figs.push([f.gratuity ? 'Gratuity' : 'Tip', f.tip]);
+  figs.push(['Total', f.total]);
+  return figs;
+}
+
+const figuresOf = (parsed) => ({
+  sub: parsed.subtotalCents ?? null, tax: parsed.taxCents ?? null, fee: parsed.feeCents || null,
+  tip: parsed.tipCents ?? null, gratuity: Boolean(parsed.gratuity), total: parsed.totalCents ?? null,
+});
 
 async function decodeImage(file) {
   if ('createImageBitmap' in window) {
@@ -1775,8 +1844,10 @@ const srcSize = (src) => ({ w: src.naturalWidth || src.width, h: src.naturalHeig
 function grayCanvas(source) {
   const { w: w0, h: h0 } = srcSize(source);
   const longSide = Math.max(w0, h0);
+  const shortSide = Math.min(w0, h0);
   let scale = 1;
-  if (longSide > 2400) scale = 2400 / longSide;
+  // Tall, narrow photos (long receipts) keep more pixels so the text stays big enough to read.
+  if (longSide > 2400) scale = Math.max(2400 / longSide, Math.min(1, 1400 / shortSide, 5600 / longSide));
   else if (longSide < 1400) scale = 1400 / longSide;
   const w = Math.max(1, Math.round(w0 * scale));
   const h = Math.max(1, Math.round(h0 * scale));
@@ -1965,9 +2036,9 @@ function confirmDialog({ title, body, action }) {
   });
 }
 
-/** A new reading replaces the list, so ask first if anyone's already been assigned. */
-async function confirmReplace() {
-  if (!state.items.some((i) => i.assigned.size > 0)) return true;
+/** A new reading replaces items, so ask first if anyone's already been assigned to them. */
+async function confirmReplace(items = state.items) {
+  if (!items.some((i) => i.assigned.size > 0)) return true;
   return confirmDialog({
     title: 'Replace the items?',
     body: 'Reading this receipt replaces the item list and who had what.',
@@ -1975,37 +2046,121 @@ async function confirmReplace() {
   });
 }
 
-async function scan(file) {
-  showError('');
-  if (!file) return;
+/** With more than one photo, ask which one to crop or deep scan. Resolves the photo, or null. */
+function choosePhoto(action) {
+  if (state.photos.length === 1) return Promise.resolve(state.photos[0]);
+  const dlg = $('choose');
+  $('choose-body').textContent = `Pick the photo to ${action}.`;
+  let picked = null;
+  $('choose-list').replaceChildren(...state.photos.map((ph, i) => el('button', {
+    type: 'button', class: 'choose-photo', 'aria-label': `Photo ${i + 1}`,
+    onclick: () => { picked = ph; dlg.close(); },
+  }, el('img', { src: shownUrl(ph), alt: '' }), el('span', { text: `Photo ${i + 1}` }))));
+  return new Promise((resolve) => {
+    dlg.addEventListener('close', () => { $('choose-list').replaceChildren(); resolve(picked); }, { once: true });
+    dlg.showModal();
+    $('choose-cancel').focus();
+  });
+}
+
+const photoItems = (photo) => state.items.filter((i) => i.photoId === photo.id);
+
+function checkFile(file) {
+  if (!file) return false;
   if (!/^image\//.test(file.type) && file.type !== '') {
     showError('That file isn’t an image. Pick a photo of the receipt.');
-    return;
+    return false;
   }
   if (file.size > LIMITS.fileBytes) {
     showError('That photo is over 25 MB. Take a new one or use a smaller copy.');
-    return;
+    return false;
   }
-  if (!(await confirmReplace())) return;
-  const snap = snapshot();
-  dropPhoto();
-  state.photo = file;
-  state.previewUrl = URL.createObjectURL(file);
-  $('preview-img').src = state.previewUrl;
-  const had = realItems().length > 0; // a first reading has nothing to go back to
-  if ((await read(async () => decodeImage(file))) && had) remember('Read a new receipt', { snap });
+  return true;
 }
 
+const READ_FAILED = 'Couldn’t read that photo. Try again with the receipt flat and well lit.';
+
+/** A new photo: replaces everything read so far. */
+async function scan(file) {
+  showError('');
+  if (!checkFile(file) || !(await confirmReplace())) return;
+  const snap = snapshot();
+  const had = realItems().length > 0; // a first reading has nothing to go back to
+  const photo = newPhoto(file);
+  const parsed = await read(() => decodeImage(file));
+  if (parsed === STALE) { releasePhotos(); return; }
+  if (parsed) {
+    state.photos = [photo];
+    applyParsed(parsed, { mode: 'replace', photo });
+    if (had) remember('Read a new receipt', { snap });
+  } else {
+    showError(state.photos.length ? READ_FAILED : `${READ_FAILED.slice(0, -1)}, or type or paste the items.`);
+  }
+  releasePhotos();
+  showReceiptState('done');
+}
+
+/** "+ Add the rest of the receipt": another photo of the same receipt, added to the list. */
+async function addPart(file) {
+  showError('');
+  if (!checkFile(file)) return;
+  if (state.photos.length >= 6) { showError('That’s the most photos for one receipt.'); return; }
+  const snap = snapshot();
+  const photo = newPhoto(file);
+  const parsed = await read(() => decodeImage(file));
+  if (parsed === STALE) { releasePhotos(); return; }
+  if (parsed) {
+    state.photos = [...state.photos, photo];
+    applyParsed(parsed, { mode: 'add', photo });
+    remember(`Added photo ${state.photos.length}`, { snap });
+  } else {
+    showError(READ_FAILED);
+  }
+  releasePhotos();
+  showReceiptState('done');
+}
+
+/** What the reader reads for a photo: the crop if it was cropped, otherwise the whole photo. */
+function sourceOf(photo) {
+  return async () => {
+    const img = await decodeImage(photo.file);
+    if (!photo.crop) return img;
+    const out = cropCanvas(img, photo.crop, photo.rotation);
+    if (typeof img.close === 'function') img.close();
+    return out;
+  };
+}
+
+/** Deep scan: the same photo read again with darker grays, with one tap to go back. */
+async function scanAgain() {
+  const photo = await choosePhoto('deep scan');
+  if (!photo) return;
+  const single = state.photos.length === 1;
+  if (!(await confirmReplace(single ? state.items : photoItems(photo)))) return;
+  const snap = snapshot();
+  const parsed = await read(sourceOf(photo), { darker: true });
+  if (parsed === STALE) return;
+  if (parsed) {
+    applyParsed(parsed, single ? { mode: 'replace', photo } : { mode: 'redo', photo, replaces: photo });
+    remember(single ? 'Deep scanned the receipt' : `Deep scanned photo ${state.photos.indexOf(photo) + 1}`, { snap, sticky: true });
+  } else {
+    showError(READ_FAILED);
+  }
+  showReceiptState('done');
+}
+
+const STALE = Symbol('stale');
+
 /**
- * Run the reader on whatever `getSource` produces (the whole photo, or a crop of it).
- * `darker` (Scan again) reads only with darker grays. Returns true when it worked.
+ * Run the reader on whatever `getSource` produces (a photo, or a crop of one).
+ * `darker` (Deep scan) reads only with darker grays. Returns the reading, null if it
+ * failed, or STALE if another reading started meanwhile.
  */
 async function read(getSource, { darker = false } = {}) {
   if (typeof window.Tesseract === 'undefined') {
     showError('The receipt reader didn’t load. Refresh the page and try again.');
-    return false;
+    return null;
   }
-  if (!darker) state.lastRead = getSource;
   const token = ++state.scanToken;
   showReceiptState('busy');
   $('busy-text').textContent = 'Getting the reader ready…';
@@ -2019,6 +2174,7 @@ async function read(getSource, { darker = false } = {}) {
     const source = await getSource();
     gray = grayCanvas(source);
     if (typeof source.close === 'function') source.close();
+    else if (source instanceof HTMLCanvasElement) { source.width = 0; source.height = 0; }
     evened = evenedCanvas(gray);
 
     const base = document.baseURI;
@@ -2033,7 +2189,7 @@ async function read(getSource, { darker = false } = {}) {
         if (token !== state.scanToken) return;
         if (STATUS[m.status]) $('busy-text').textContent = STATUS[m.status];
         if (m.status === 'recognizing text') {
-          $('busy-text').textContent = darker ? 'Scanning again with darker grays…' : pass === 1 ? 'Reading the receipt…' : 'Taking another look…';
+          $('busy-text').textContent = darker ? 'Deep scanning…' : pass === 1 ? 'Reading the receipt…' : 'Taking another look…';
           $('busy-bar').value = Math.round(((pass - 1) * 100) / 3 + ((m.progress || 0) * 100) / 3);
         }
       },
@@ -2047,17 +2203,17 @@ async function read(getSource, { darker = false } = {}) {
       const canvas = darkCanvas(evened);
       parsed = await readImage(worker, canvas);
       canvas.width = 0; canvas.height = 0;
-      if (token !== state.scanToken) return false;
+      if (token !== state.scanToken) return STALE;
     } else {
       parsed = await readImage(worker, evened);
-      if (token !== state.scanToken) return false;
+      if (token !== state.scanToken) return STALE;
       for (const next of [() => darkCanvas(evened), () => gray]) {
         if (scoreParse(parsed) >= 10000) break;
         pass++;
         const canvas = next();
         const other = await readImage(worker, canvas);
         if (canvas !== gray) { canvas.width = 0; canvas.height = 0; }
-        if (token !== state.scanToken) return false;
+        if (token !== state.scanToken) return STALE;
         if (scoreParse(other) > scoreParse(parsed)) parsed = other;
       }
       // It added up, but faint print (like "2 @ $8.25" under a dish) may have been skipped.
@@ -2066,37 +2222,17 @@ async function read(getSource, { darker = false } = {}) {
         const canvas = darkCanvas(evened);
         const other = await readImage(worker, canvas);
         canvas.width = 0; canvas.height = 0;
-        if (token !== state.scanToken) return false;
+        if (token !== state.scanToken) return STALE;
         parsed = borrowQuantities(parsed, other);
       }
     }
-    applyParsed(parsed);
-    showReceiptState('done');
-    renderReceiptView();
-    return true;
+    return parsed;
   } catch {
-    if (token !== state.scanToken) return false;
-    if (state.photo) {
-      showReceiptState('done');
-      showError('Couldn’t read that. Try cropping again, or use a different photo.');
-    } else {
-      dropPhoto();
-      showReceiptState('empty');
-      showError('Couldn’t read that photo. Try again with the receipt flat and well lit, or type the items in.');
-    }
-    return false;
+    return token === state.scanToken ? null : STALE;
   } finally {
     if (worker) worker.terminate().catch(() => {});
     for (const c of [gray, evened]) if (c) { c.width = 0; c.height = 0; }
   }
-}
-
-/** Read the same photo again with darker grays, with one tap to go back. */
-async function scanAgain() {
-  if (!state.lastRead || !(await confirmReplace())) return;
-  const snap = snapshot();
-  const worked = await read(state.lastRead, { darker: true });
-  if (worked) remember('Scanned again with darker grays', { snap, sticky: true });
 }
 
 function resetTip() {
@@ -2106,74 +2242,117 @@ function resetTip() {
   setTipMode('percent');
 }
 
-function applyParsed(parsed, { append = false, noteEl = $('receipt-note') } = {}) {
-  state.items = append ? state.items.filter((i) => !isBlank(i)) : [];
+const lineKey = (name, cents) => `${cleanText(name || '', LIMITS.itemLen).toLowerCase()}|${cents}`;
+
+/** How many lines at the top of a new photo repeat the bottom of the photo before it. */
+function overlapWith(prev, list) {
+  const before = prev ? photoItems(prev) : [];
+  const most = Math.min(5, before.length, list.length);
+  for (let k = most; k > 0; k--) {
+    const tail = before.slice(-k).map((i) => lineKey(i.name, i.cents));
+    const head = list.slice(0, k).map((p) => lineKey(p.name, p.cents));
+    if (tail.every((t, n) => t === head[n])) return k;
+  }
+  return 0;
+}
+
+/**
+ * Put a reading into the page.
+ *  replace: a new receipt, everything starts over (photo or not)
+ *  append:  pasted text, added to the list
+ *  add:     another photo of the same receipt, added after the others
+ *  redo:    one photo of several read again; only its own items are replaced, in place
+ */
+function applyParsed(parsed, { mode = 'replace', photo = null, replaces = null } = {}) {
+  let skipped = 0;
+  let insertAt = -1;
+  if (mode === 'replace') {
+    state.items = [];
+  } else if (mode === 'redo') {
+    const gone = new Set(state.items.filter((i) => i.photoId === replaces.id));
+    insertAt = state.items.findIndex((i) => gone.has(i));
+    // Add-ons someone attached to a replaced item stay, as rows of their own.
+    for (const i of state.items) {
+      if (i.addon && gone.has(byId(i.parentId)) && !gone.has(i)) { i.addon = false; i.parentId = null; i.open = false; i.assigned = new Map(); }
+    }
+    state.items = state.items.filter((i) => !gone.has(i));
+    if (insertAt > state.items.length) insertAt = -1;
+    // The top of this photo may repeat the bottom of the one before it, same as when it was added.
+    skipped = overlapWith(state.photos[state.photos.indexOf(photo) - 1], parsed.items);
+  } else {
+    state.items = state.items.filter((i) => !isBlank(i));
+    if (mode === 'add') skipped = overlapWith(state.photos[state.photos.length - 2], parsed.items);
+  }
+
   let room = LIMITS.items - state.items.length;
   const created = [];
+  const fresh = [];
   parsed.items.forEach((p, idx) => {
-    if (room <= 0) return;
+    if (idx < skipped || room <= 0) return;
     const parent = p.addon ? created[p.parent] : null;
     const item = makeItem({
       name: p.name, cents: p.cents, qty: p.qty || 1, qtyGuess: Boolean(p.qtyGuess), joined: p.joined,
       addon: Boolean(parent), parentId: parent ? parent.id : null, afterSubtotal: Boolean(p.afterSubtotal),
     });
+    item.photoId = photo ? photo.id : null;
     created[idx] = item;
-    state.items.push(item);
+    fresh.push(item);
     room--;
   });
+  if (insertAt >= 0) state.items.splice(insertAt, 0, ...fresh);
+  else state.items.push(...fresh);
 
   // Tax and fee lines as the receipt printed them, one row each.
-  const hasSubtotal = parsed.subtotalCents !== null && parsed.subtotalCents !== undefined;
+  const figs = figuresOf(parsed);
+  const hasSubtotal = figs.sub !== null;
   let taxes = (parsed.taxes || []).map((t) => ({ id: newId(), name: t.name, raw: centsToInput(t.cents), inSubtotal: false }));
-  if (!taxes.length && parsed.taxCents !== null && parsed.taxCents !== undefined) taxes = [{ ...blankTax(), raw: centsToInput(parsed.taxCents) }];
+  if (!taxes.length && figs.tax !== null) taxes = [{ ...blankTax(), raw: centsToInput(figs.tax) }];
   let fees = (parsed.fees || []).map((f) => ({
     id: newId(), name: f.name, raw: centsToInput(f.cents), even: Boolean(f.even), inSubtotal: Boolean(f.inSubtotal) && hasSubtotal,
   }));
   if (!fees.length && parsed.feeCents) fees = [{ id: newId(), name: 'Fees', raw: centsToInput(parsed.feeCents), even: false, inSubtotal: false }];
 
-  if (append) {
-    if (hasSubtotal) state.receipt.subtotalCents = parsed.subtotalCents;
-    if (parsed.totalCents !== null) state.receipt.totalCents = parsed.totalCents;
-    if (taxes.length && !readTax()) state.taxes = taxes;
-    if (fees.length && !state.fees.length) state.fees = fees;
-  } else {
+  if (mode === 'replace') {
     // A new receipt starts clean: nothing carried over from the last one.
-    state.receipt = { subtotalCents: parsed.subtotalCents, totalCents: parsed.totalCents };
+    state.receipt = { subtotalCents: figs.sub, totalCents: figs.total };
     state.taxes = taxes;
     state.fees = fees;
-    $('disc').value = '';
-    state.discNames = [];
-    showDisc(false);
+    state.discounts = [];
     resetTip();
+    if (photo) state.found = figs;
+  } else {
+    if (hasSubtotal) state.receipt.subtotalCents = figs.sub;
+    if (figs.total !== null) state.receipt.totalCents = figs.total;
+    const redo = mode === 'redo';
+    if (taxes.length && (redo || !readTax())) state.taxes = taxes;
+    if (fees.length && (redo || !state.fees.length)) state.fees = fees;
+    if (photo) {
+      const f = { ...(state.found || {}) };
+      for (const [k, v] of Object.entries(figs)) if (v !== null && v !== false) f[k] = v;
+      state.found = f;
+    }
   }
   state.tipEven = state.fees.some((f) => f.even); // a delivery order: the driver's tip splits evenly
-  if (parsed.tipCents !== null && parsed.tipCents > 0 && (!append || !$('tip-amt').value.trim())) {
-    $('tip-amt').value = centsToInput(parsed.tipCents);
-    state.gratuityFromReceipt = Boolean(parsed.gratuity);
+  if (figs.tip !== null && figs.tip > 0 && (mode === 'replace' || !$('tip-amt').value.trim())) {
+    $('tip-amt').value = centsToInput(figs.tip);
+    state.gratuityFromReceipt = figs.gratuity;
     setTipMode('amount');
   }
   guessMissingPrice();
 
-  const dishes = created.filter((i) => i && !i.addon && !(i.cents < 0)).length;
-  const extras = created.filter((i) => i && i.addon).length;
-  const discounts = created.filter((i) => i && !i.addon && i.cents < 0).length;
-  if (parsed.cardSlip) {
-    noteEl.textContent = 'This looks like the card slip, not the itemized check. Take a photo of the check that lists the dishes.';
-  } else if (dishes + extras + discounts === 0) {
-    noteEl.textContent = append
-      ? 'No prices found in that text. Each item needs its price on the same line, like “Iced Tea 3.25”.'
-      : 'No prices found in that photo. Try a sharper shot or crop it, or add the items by hand below.';
+  const heads = [];
+  if (skipped) heads.push([`Skipped ${skipped} line${skipped === 1 ? '' : 's'} that ${skipped === 1 ? 'was' : 'were'} in both photos.`]);
+  if (parsed.cardSlip) heads.push(['This looks like the card slip. Take a photo of the itemized check that lists the dishes.']);
+  else if (!fresh.length && !skipped) {
+    heads.push([photo ? 'No prices found. Try a sharper photo or crop it, or type or paste the items.'
+      : 'No prices found in that text. Each item needs its price on the same line, like “Iced Tea 3.25”.']);
+  }
+  if (photo) {
+    state.note = photoNote(heads);
   } else {
-    const found = [`${dishes} item${dishes === 1 ? '' : 's'}`];
-    if (extras) found.push(`${extras} add-on${extras === 1 ? '' : 's'}`);
-    if (discounts) found.push(`${discounts} discount${discounts === 1 ? '' : 's'}`);
-    // "Found 3 items. Subtotal $78.25 · Tax $6.65 · Fees $4.29 · Total $84.90."
-    const amount = (c) => (c === null || c === undefined ? 'not found' : formatMoney(c));
-    const figures = [`Subtotal ${amount(parsed.subtotalCents)}`, `Tax ${amount(parsed.taxCents)}`];
-    if (parsed.feeCents) figures.push(`Fees ${formatMoney(parsed.feeCents)}`);
-    if (parsed.tipCents !== null && parsed.tipCents > 0) figures.push(`${parsed.gratuity ? 'Gratuity' : 'Tip'} ${formatMoney(parsed.tipCents)}`);
-    figures.push(`Total ${amount(parsed.totalCents)}`);
-    noteEl.textContent = `Found ${listAnd(found)}. ${figures.join(' · ')}.`;
+    // Pasted text gets the same kind of note, under the text box.
+    const note = fresh.length ? { found: foundText(fresh), figs: figsOf(figs), heads } : { found: null, figs: null, heads };
+    renderNote($('paste-note'), note);
   }
 
   renderTipNote();
@@ -2182,26 +2361,47 @@ function applyParsed(parsed, { append = false, noteEl = $('receipt-note') } = {}
   renderItems();
   renderPayers();
   renderResults();
+  renderPhotos();
+  return fresh.length;
 }
 
 /* -------------------------------------------------------- crop and rotate */
 
-const crop = { img: null, drag: null };
+const crop = { img: null, drag: null, photo: null, work: null }; // work = { rotation, crop } while the crop screen is open
 
 function rotatedSize() {
   const { w, h } = srcSize(crop.img);
-  return state.rotation % 180 ? { rw: h, rh: w } : { rw: w, rh: h };
+  return crop.work.rotation % 180 ? { rw: h, rh: w } : { rw: w, rh: h };
 }
 
 /** Draw the photo turned by `rotation` degrees, in rotated-image coordinates. */
-function drawRotated(ctx, img, rw, rh) {
+function drawRotated(ctx, img, rw, rh, rotation) {
   const { w, h } = srcSize(img);
   ctx.save();
-  if (state.rotation === 90) { ctx.translate(rw, 0); ctx.rotate(Math.PI / 2); }
-  else if (state.rotation === 180) { ctx.translate(rw, rh); ctx.rotate(Math.PI); }
-  else if (state.rotation === 270) { ctx.translate(0, rh); ctx.rotate(-Math.PI / 2); }
+  if (rotation === 90) { ctx.translate(rw, 0); ctx.rotate(Math.PI / 2); }
+  else if (rotation === 180) { ctx.translate(rw, rh); ctx.rotate(Math.PI); }
+  else if (rotation === 270) { ctx.translate(0, rh); ctx.rotate(-Math.PI / 2); }
   ctx.drawImage(img, 0, 0, w, h);
   ctx.restore();
+}
+
+/** Cut a crop out of the turned photo at full resolution (long side capped at 6000px). */
+function cropCanvas(img, r, rotation) {
+  const { w, h } = srcSize(img);
+  const rw = rotation % 180 ? h : w;
+  const rh = rotation % 180 ? w : h;
+  const cw = Math.max(1, Math.round(r.w * rw));
+  const ch = Math.max(1, Math.round(r.h * rh));
+  const s = Math.min(1, 6000 / Math.max(cw, ch));
+  const out = document.createElement('canvas');
+  out.width = Math.max(1, Math.round(cw * s));
+  out.height = Math.max(1, Math.round(ch * s));
+  const ctx = out.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.scale(s, s);
+  ctx.translate(-r.x * rw, -r.y * rh);
+  drawRotated(ctx, img, rw, rh, rotation);
+  return out;
 }
 
 function drawCrop() {
@@ -2220,12 +2420,12 @@ function drawCrop() {
   const ctx = canvas.getContext('2d');
   ctx.setTransform((cssW * dpr) / rw, 0, 0, (cssH * dpr) / rh, 0, 0);
   ctx.imageSmoothingQuality = 'high';
-  drawRotated(ctx, crop.img, rw, rh);
+  drawRotated(ctx, crop.img, rw, rh, crop.work.rotation);
   placeBox();
 }
 
 function placeBox() {
-  const r = state.crop;
+  const r = crop.work.crop;
   const box = $('crop-box');
   box.style.left = `${r.x * 100}%`;
   box.style.top = `${r.y * 100}%`;
@@ -2236,14 +2436,17 @@ function placeBox() {
 const fullCrop = () => ({ x: 0.04, y: 0.03, w: 0.92, h: 0.94 });
 
 async function openCrop() {
-  if (!state.photo) return;
+  const photo = await choosePhoto('crop and re-read');
+  if (!photo) return;
   try {
-    crop.img = await decodeImage(state.photo);
+    crop.img = await decodeImage(photo.file);
   } catch {
     showError('Couldn’t open that photo for cropping.');
     return;
   }
-  if (!state.crop) state.crop = fullCrop();
+  // The crop screen always shows the whole photo, so a crop can be widened again.
+  crop.photo = photo;
+  crop.work = { rotation: photo.rotation, crop: photo.crop ? { ...photo.crop } : fullCrop() };
   $('crop').hidden = false;
   document.body.classList.add('no-scroll');
   drawCrop();
@@ -2255,6 +2458,7 @@ function closeCrop() {
   document.body.classList.remove('no-scroll');
   if (crop.img && typeof crop.img.close === 'function') crop.img.close();
   crop.img = null;
+  crop.photo = null;
   const canvas = $('crop-canvas');
   canvas.width = 0;
   canvas.height = 0;
@@ -2264,7 +2468,7 @@ function closeCrop() {
 /** Move one edge set of the crop box, keeping it inside the photo and at least 8% in size. */
 function resizeCrop(handle, dx, dy) {
   const MIN = 0.08;
-  const r = { ...state.crop };
+  const r = { ...crop.work.crop };
   let x1 = r.x;
   let y1 = r.y;
   let x2 = r.x + r.w;
@@ -2272,7 +2476,7 @@ function resizeCrop(handle, dx, dy) {
   if (handle === 'move') {
     const nx = Math.min(1 - r.w, Math.max(0, r.x + dx));
     const ny = Math.min(1 - r.h, Math.max(0, r.y + dy));
-    state.crop = { ...r, x: nx, y: ny };
+    crop.work.crop = { ...r, x: nx, y: ny };
     placeBox();
     return;
   }
@@ -2280,7 +2484,7 @@ function resizeCrop(handle, dx, dy) {
   if (handle.includes('r')) x2 = Math.max(x1 + MIN, Math.min(1, x2 + dx));
   if (handle.includes('t')) y1 = Math.min(y2 - MIN, Math.max(0, y1 + dy));
   if (handle.includes('b')) y2 = Math.max(y1 + MIN, Math.min(1, y2 + dy));
-  state.crop = { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+  crop.work.crop = { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
   placeBox();
 }
 
@@ -2317,45 +2521,48 @@ function onHandleKey(e) {
 }
 
 function rotateCrop() {
-  state.rotation = (state.rotation + 90) % 360;
-  state.crop = fullCrop();
+  crop.work.rotation = (crop.work.rotation + 90) % 360;
+  crop.work.crop = fullCrop();
   drawCrop();
 }
 
 async function readCrop() {
-  if (!crop.img) return;
-  if (!(await confirmReplace())) return;
+  if (!crop.img || !crop.photo) return;
+  const old = crop.photo;
+  const single = state.photos.length === 1;
+  if (!(await confirmReplace(single ? state.items : photoItems(old)))) return;
   if (!crop.img) return;
   const snap = snapshot();
   const had = realItems().length > 0;
   const img = crop.img;
+  const { rotation, crop: r } = crop.work;
   crop.img = null; // the reader owns it now
-  const r = state.crop;
+  crop.photo = null;
   $('crop').hidden = true;
   document.body.classList.remove('no-scroll');
-  const canvas = $('crop-canvas');
-  canvas.width = 0;
-  canvas.height = 0;
-  const worked = await read(async () => {
-    // Cut the crop out of the turned photo at full resolution (capped at 3000px).
-    const { w, h } = srcSize(img);
-    const rw = state.rotation % 180 ? h : w;
-    const rh = state.rotation % 180 ? w : h;
-    const cw = Math.max(1, Math.round(r.w * rw));
-    const ch = Math.max(1, Math.round(r.h * rh));
-    const s = Math.min(1, 3000 / Math.max(cw, ch));
-    const out = document.createElement('canvas');
-    out.width = Math.max(1, Math.round(cw * s));
-    out.height = Math.max(1, Math.round(ch * s));
-    const ctx = out.getContext('2d');
-    ctx.imageSmoothingQuality = 'high';
-    ctx.scale(s, s);
-    ctx.translate(-r.x * rw, -r.y * rh);
-    drawRotated(ctx, img, rw, rh);
+  const screen = $('crop-canvas');
+  screen.width = 0;
+  screen.height = 0;
+  const photo = newPhoto(old.file, { crop: r, rotation });
+  const parsed = await read(async () => {
+    const out = cropCanvas(img, r, rotation);
     if (typeof img.close === 'function') img.close();
+    // Keep a copy of the crop to show in place of the whole photo.
+    const blob = await new Promise((res) => out.toBlob(res, 'image/jpeg', 0.9));
+    if (blob) photo.cropUrl = URL.createObjectURL(blob);
     return out;
   });
-  if (worked && had) remember('Read the cropped receipt', { snap });
+  if (parsed === STALE) { releasePhotos(); return; }
+  if (parsed) {
+    state.photos = state.photos.map((ph) => (ph === old ? photo : ph));
+    applyParsed(parsed, single ? { mode: 'replace', photo } : { mode: 'redo', photo, replaces: old });
+    if (had) remember(single ? 'Read the cropped receipt' : `Re-read photo ${state.photos.indexOf(photo) + 1}`, { snap });
+  } else {
+    showError('Couldn’t read that. Try cropping again, or use a different photo.');
+  }
+  releasePhotos();
+  showReceiptState('done');
+  $('crop-open').focus();
 }
 
 /* ------------------------------------------------------------------- paste */
@@ -2374,7 +2581,7 @@ function readPasted() {
   const parsed = bestParse(raw, pairColumns(raw));
   const snap = snapshot();
   const had = realItems().length > 0;
-  applyParsed(parsed, { append: true, noteEl: $('paste-note') });
+  applyParsed(parsed, { mode: 'append' });
   if (parsed.items.length && had) remember(`Added ${parsed.items.length} line${parsed.items.length === 1 ? '' : 's'} from the text`, { snap });
   if (parsed.items.length) {
     setPasteOpen(false); // clears the box
@@ -2384,34 +2591,39 @@ function readPasted() {
 /* ------------------------------------------------------------------- reset */
 
 async function resetAll() {
-  const hasData = state.people.length || state.items.length || state.previewUrl;
+  const hasData = state.people.length || state.items.length || state.photos.length;
   if (hasData && !(await confirmDialog({ title: 'Start over?', body: 'This clears everything on the page.', action: 'Start over' }))) return;
   const snap = snapshot();
   state.scanToken++;
-  dropPhoto();
+  // Start over lets go of the photos right away, including the ones Undo was holding on to.
+  state.photos = [];
+  for (const step of state.history) step.snap.photos = [];
+  snap.photos = [];
+  state.found = null;
+  state.note = null;
+  state.receiptShown = false;
+  releasePhotos();
   state.people = [];
   state.payerIds = new Set();
   state.pay = new Map();
   state.items = [];
   state.receipt = { subtotalCents: null, totalCents: null };
-  state.discNames = [];
+  state.discounts = [];
   state.taxes = [];
   state.fees = [];
   state.tipEven = false;
   state.editing = null;
-  for (const id of ['disc', 'tip-amt', 'tip-total', 'person-name', 'copy-fallback-text']) $(id).value = '';
+  for (const id of ['tip-amt', 'tip-total', 'person-name', 'copy-fallback-text']) $(id).value = '';
   $('tip-pct').value = '20';
-  $('receipt-note').textContent = '';
-  $('paste-note').textContent = '';
+  $('paste-note').replaceChildren();
   $('copy-fallback').hidden = true;
-  showDisc(false);
   setPasteOpen(false);
   syncTipPresets();
   resetTip();
   showError('');
-  showReceiptState('empty');
+  showReceiptState('idle');
   renderAll();
-  // Everything typed comes back with Undo. The photo doesn't: it's let go of right away.
+  // Everything typed comes back with Undo. The photos don't.
   if (hasData) remember('Started over', { snap });
   window.scrollTo({ top: 0 });
 }
@@ -2427,13 +2639,10 @@ function onPick(e) {
 
 $('photo').addEventListener('change', onPick);
 $('photo-again').addEventListener('change', onPick);
-$('photo-remove').addEventListener('click', () => {
-  state.scanToken++;
-  dropPhoto();
-  renderAll();
-  $('receipt-note').textContent = '';
-  showError('');
-  showReceiptState('empty');
+$('photo-add').addEventListener('change', (e) => {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = '';
+  addPart(file);
 });
 $('crop-open').addEventListener('click', openCrop);
 $('crop-cancel').addEventListener('click', closeCrop);
@@ -2444,7 +2653,7 @@ $('crop-stage').addEventListener('pointermove', onCropPointerMove);
 $('crop-stage').addEventListener('pointerup', onCropPointerUp);
 $('crop-stage').addEventListener('pointercancel', onCropPointerUp);
 document.querySelectorAll('#crop-box .handle').forEach((h) => h.addEventListener('keydown', onHandleKey));
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('crop').hidden && !$('confirm').open) closeCrop(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('crop').hidden && !$('confirm').open && !$('choose').open) closeCrop(); });
 window.addEventListener('resize', () => { if (!$('crop').hidden && crop.img) drawCrop(); });
 
 $('item-add').addEventListener('click', () => addItem());
@@ -2453,12 +2662,11 @@ $('person-name').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') { e.preventDefault(); addPerson(); }
 });
 const staticChecks = [
-  guard($('disc'), $('disc-err'), (v) => (badMoney(v) ? 'The discount doesn’t look like a dollar amount.' : '')),
   guard($('tip-pct'), $('tip-pct-err'), (v) => (badPct(v) ? 'The tip percent should be a number from 0 to 100.' : '')),
   guard($('tip-amt'), $('tip-amt-err'), (v) => (badMoney(v, { negative: false }) ? 'The tip amount doesn’t look like a dollar amount.' : '')),
   guard($('tip-total'), $('tip-total-err'), (v) => (badMoney(v, { negative: false }) ? 'The total doesn’t look like a dollar amount.' : '')),
 ];
-for (const id of ['disc', 'tip-total']) {
+for (const id of ['tip-total']) {
   $(id).addEventListener('input', () => { renderPayerCalcs(); renderResults(); });
   $(id).addEventListener('blur', () => {
     const c = parseMoney($(id).value);
@@ -2473,8 +2681,10 @@ document.querySelectorAll('#tip-split .chip').forEach((b) => {
 });
 $('scan-again').addEventListener('click', scanAgain);
 $('receipt-toggle').addEventListener('click', () => { state.receiptShown = !state.receiptShown; renderReceiptView(); });
-$('disc-show').addEventListener('click', () => { showDisc(true); $('disc').focus(); });
-$('disc-to-row').addEventListener('click', discountToRow);
+$('disc-show').addEventListener('click', () => addCharge('disc'));
+$('disc-add').addEventListener('click', () => addCharge('disc'));
+$('choose-cancel').addEventListener('click', () => $('choose').close());
+$('choose').addEventListener('click', (e) => { if (e.target === $('choose')) $('choose').close(); });
 $('tip-amt').addEventListener('input', () => {
   // A tip typed by hand is no longer the receipt's gratuity.
   if (state.gratuityFromReceipt) { state.gratuityFromReceipt = false; renderTipNote(); }
