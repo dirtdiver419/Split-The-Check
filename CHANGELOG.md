@@ -5,6 +5,34 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2026-11-12
+
+### Added
+
+- **Undo** button above **Start over** that goes back up to 20 steps, one at a time. Under it: what the next tap undoes ("Undoes: Removed Iced Tea") and how many steps are left after that. The pop-up Undo uses the same list of steps.
+- Reading a new receipt over an existing list, adding pasted lines, and **Start over** can now be undone too. (Start over lets go of the photo right away, so Undo brings back everything typed but not the photo.)
+- **Move this item ↑ ↓** in Options, for putting rows back in receipt order. Add-ons move with their dish.
+- Money boxes say right away when something can't be read as an amount: a red edge on the box and a short line under it ("The price doesn't look like a dollar amount."). It goes away as soon as the box is fixed. A lone "$", "." or "-" counts as still typing, not a mistake. The message is linked to the box for screen readers and read out once you leave the box. Covers every money box: prices, tax and fee amounts, the discount, the receipt subtotal and total, all tip boxes and each payer's boxes.
+- "Everything's assigned." in green under **The split** once every item is claimed and nothing is wrong.
+
+### Changed
+
+- Item rows are simpler: name and ✕ on top, then the price (the only price you type), the per-item price as plain text when there's more than one ("3 × $3.34", rounded up to the cent), and **Options** at the right. People go underneath.
+- **Change** is now **Options** everywhere, including add-ons and tax and fee rows (where it replaces **⋯**). The menu, top to bottom: Quantity, Split into, Add an add-on, Attach to [the item above], Move this item, and **This item is: Item · Discount · Fee · Tax**. It opens as a tinted panel with a khaki edge so it reads as part of the row it belongs to.
+- An add-on's Options has **Detach from [dish]** and **This item is: Add-on · Fee · Tax**. A tax or fee row's Options has **Move to items**.
+- Making a dish a fee, tax or discount no longer needs its add-ons removed first. They turn into rows of their own, and the Undo message says so ("Made Steak Frites tax · Crispy Shrimp is now its own item").
+- Confirmations ("Replace the items?", "Start over?") open in the page's own style instead of the browser's plain pop-up. Esc or a tap outside the box cancels.
+- Step 1 has one text option, **Type or paste instead**, for typing items line by line or pasting receipt text. Single items still go in with **Add an item** in step 3.
+- The note after reading a receipt lists what was found: "Found 3 items. Subtotal $55.00 · Tax $4.68 · Total $59.68." Anything missing says "not found".
+- Selected buttons (people, Everyone, Paid, tip type, tip percent, Split evenly / By order, This item is) are soft gold with a dark gold edge instead of navy, so they stand apart from action buttons. **Everyone** has a solid outline.
+- **Add a fee or surcharge** and **Add a discount** are quieter gray links.
+- A tax or fee typed as a negative ("-2.50") is read as $2.50 right away instead of being treated as a mistake until you leave the box.
+
+### Fixed
+
+- A price that couldn't be read no longer disappears when the list redraws. It stays in the box with its message until fixed.
+- Accessibility: Options, ✕ and the add-on Options have tap areas of at least 44 × 44 px. Keyboard focus stays put after changing what an item is, splitting it, attaching it or moving it, and lands on the next row when a row turns into a fee or tax. New colors meet WCAG AA contrast.
+
 ## [2.3.0] - 2026-11-09
 
 ### Added
@@ -16,7 +44,7 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - The receipt's subtotal and total are shown under the items with **Edit**, for when the reader got them wrong. The subtotal check uses the corrected number.
 - **Show receipt** in step 3 shows the photo next to the items for checking. It stays in memory only, like before, and goes away with **Remove photo** or when the page closes.
 - **Scan again** reads the same photo again with darker grays. Its Undo stays up until the next tap.
-- Faint quantities: when a receipt adds up but has a lot of light-gray print, the photo is read once more with darker grays, and only quantities (like "2 @ $9.50") are taken from that reading, when the rows and prices match exactly.
+- Faint quantities: when a receipt adds up but has a lot of light-gray print, the photo is read once more with darker grays, and only quantities (like "2 @ $8.25") are taken from that reading, when the rows and prices match exactly.
 - Driver-benefit and Seattle worker-pay charges are recognized as fees.
 
 ### Changed

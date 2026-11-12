@@ -33,7 +33,6 @@
           <input id="photo" type="file" accept="image/*">
           Take or choose a photo
         </label>
-        <button id="manual" class="btn btn-quiet" type="button">Type the items in instead</button>
       </div>
 
       <div id="receipt-busy" class="busy" hidden>
@@ -60,15 +59,15 @@
       <p id="receipt-error" class="error" role="alert" hidden></p>
 
       <div id="paste" class="paste">
-        <button id="paste-toggle" class="btn btn-quiet" type="button" aria-expanded="false" aria-controls="paste-panel">Paste receipt text</button>
+        <button id="paste-toggle" class="btn btn-quiet" type="button" aria-expanded="false" aria-controls="paste-panel">Type or paste instead</button>
         <div id="paste-panel" class="paste-panel" hidden>
-          <label for="paste-text">Receipt text</label>
-          <textarea id="paste-text" rows="7" maxlength="20000" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Caesar Salad 12.50&#10;Iced Tea 3.75&#10;Sales Tax 1.45"></textarea>
+          <label for="paste-text">Items or receipt text</label>
+          <textarea id="paste-text" rows="7" maxlength="20000" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Caesar Salad 12.50&#10;Iced Tea 3.25&#10;Sales Tax 1.45"></textarea>
           <div class="row">
             <button id="paste-read" class="btn btn-primary" type="button">Read text</button>
             <button id="paste-cancel" class="btn btn-quiet" type="button">Cancel</button>
           </div>
-          <p class="note">Copied text from Google Lens or similar works too. Items get added to the list below, not swapped in.</p>
+          <p class="note">Type one item per line with its price, like “Caesar Salad 12.50”, or paste text copied from Google Lens or similar. Items get added to the list below, not swapped in.</p>
         </div>
         <p id="paste-note" class="note" role="status" aria-live="polite"></p>
       </div>
@@ -123,6 +122,7 @@
       <div class="field" id="disc-wrap" hidden>
         <label for="disc">Discounts</label>
         <div class="money"><span aria-hidden="true">$</span><input id="disc" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00"></div>
+        <p id="disc-err" class="field-error" hidden></p>
         <div class="field-note-row">
           <p id="disc-note" class="note">Coupons and other discounts on the whole bill, spread by what each person ordered.</p>
           <button id="disc-to-row" class="linkish" type="button">Make it a line item</button>
@@ -145,13 +145,16 @@
             <button type="button" class="chip" data-pct="22" aria-pressed="false">22%</button>
           </div>
           <div class="money pct"><input id="tip-pct" type="text" inputmode="decimal" autocomplete="off" value="20" aria-label="Tip percent"><span aria-hidden="true">%</span></div>
+          <p id="tip-pct-err" class="field-error" hidden></p>
           <p class="note">Percent of the food and drink, before tax.</p>
         </div>
         <div id="tip-amount-wrap" hidden>
           <div class="money"><span aria-hidden="true">$</span><input id="tip-amt" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00" aria-label="Tip amount"></div>
+          <p id="tip-amt-err" class="field-error" hidden></p>
         </div>
         <div id="tip-total-wrap" hidden>
           <div class="money"><span aria-hidden="true">$</span><input id="tip-total" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00" aria-label="Total you want to pay"></div>
+          <p id="tip-total-err" class="field-error" hidden></p>
           <p id="tip-total-calc" class="computed" aria-live="polite"></p>
           <p class="note">Type the total you want to pay, tip included.</p>
         </div>
@@ -189,6 +192,11 @@
     </section>
 
     <div class="reset-wrap">
+      <div id="undo-wrap" class="undo-wrap" hidden>
+        <button id="undo-step" class="btn btn-undo" type="button" aria-describedby="undo-what undo-more"><span aria-hidden="true">↶</span> Undo</button>
+        <p id="undo-what" class="undo-what"></p>
+        <p id="undo-more" class="undo-what"></p>
+      </div>
       <button id="reset" class="btn btn-ghost" type="button">Start over</button>
     </div>
   </main>
@@ -196,7 +204,7 @@
   <footer class="foot">
     <p>Nothing on this page is stored. Close or refresh it and everything's gone.</p>
     <p class="disclaimer">Not financial advice. The receipt reader can make mistakes, so check the items, prices and totals against the actual receipt before anyone pays.</p>
-    <p class="version">Version 2.3.0</p>
+    <p class="version">Version 2.4.0</p>
   </footer>
 
   <div id="undo-bar" class="undo-bar" role="status" aria-live="polite" hidden>
@@ -204,6 +212,19 @@
     <button id="undo-btn" type="button">Undo</button>
     <button id="undo-close" class="undo-close" type="button" aria-label="Dismiss">×</button>
   </div>
+
+  <p id="sr-status" class="sr-only" role="status" aria-live="polite"></p>
+
+  <dialog id="confirm" class="confirm" aria-labelledby="confirm-title" aria-describedby="confirm-body">
+    <div class="confirm-card">
+      <h2 id="confirm-title"></h2>
+      <p id="confirm-body"></p>
+      <div class="confirm-bar">
+        <button id="confirm-cancel" class="btn btn-quiet" type="button">Cancel</button>
+        <button id="confirm-ok" class="btn btn-primary" type="button"></button>
+      </div>
+    </div>
+  </dialog>
 
   <div id="crop" class="crop-screen" role="dialog" aria-modal="true" aria-labelledby="crop-title" hidden>
     <div class="crop-inner">
