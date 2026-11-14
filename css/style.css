@@ -550,19 +550,14 @@ body.no-scroll { overflow: hidden; }
 }
 .opt-action:hover { background: #efede4; }
 .opt-action .chev { font-size: 1.3rem; line-height: 1; color: var(--muted); }
-.opt-split, .opt-move { display: inline-flex; align-items: center; gap: .5rem; margin-left: auto; }
+.opt-move { display: inline-flex; align-items: center; gap: .5rem; margin-left: auto; }
 .opt-row .qty { margin-left: auto; }
-.opt-split .qty { margin-left: 0; }
 .opt-menu .step-btn, .opt-menu .qty .step-btn {
   width: 2rem; height: 2rem; background: #fff; border: 1px solid #cfcabb; color: var(--ink); font-size: .9rem;
 }
 .opt-menu .step-btn:disabled { opacity: 1; color: #a8a597; }
 .opt-menu .qty-n { font-weight: 600; }
-.pill {
-  font: inherit; font-weight: 700; color: var(--ink); cursor: pointer;
-  background: #fff; border: 1px solid #cfcabb; border-radius: 999px; padding: .3rem .85rem; min-height: 2.1rem;
-}
-.pill:hover, .opt-menu .step-btn:not(:disabled):hover { background: #f0eee6; }
+.opt-menu .step-btn:not(:disabled):hover { background: #f0eee6; }
 .opt-kinds { justify-content: flex-start; }
 .opt-kinds .chips { margin-top: 0; gap: .4rem; }
 .opt-menu .chip { font-size: .8rem; min-height: 2.1rem; padding: calc(.25rem - .5px) calc(.65rem - .5px); }
@@ -659,3 +654,35 @@ body.no-scroll { overflow: hidden; }
 
 /* Show receipt: photos stacked */
 .receipt-big img + img { margin-top: .4rem; }
+
+/* ================= 2.6.0 ================= */
+
+/* subtotal check after the receipt's difference is taken off: an advisory, not a warning */
+.check.settled { color: var(--muted); font-weight: 400; border-left: 3px solid var(--brass); padding-left: .65rem; }
+
+/* Uneven shares and Move to discounts side by side */
+.assign-links { display: flex; flex-wrap: wrap; gap: 0 1.1rem; }
+
+/* Split by quantity grayed out at quantity 1 */
+.opt-action:disabled { color: #a8a597; cursor: default; }
+.opt-action:disabled:hover { background: none; }
+.opt-action:disabled .chev { color: #c9c6b8; }
+
+/* ---------- guide.html ---------- */
+.guide .sheet h2 { margin-bottom: .6rem; }
+.guide .sheet h3 { font-size: 1.02rem; margin: 1.4rem 0 .4rem; }
+.guide .sheet p, .guide .sheet li { line-height: 1.5; }
+.guide .sheet ol, .guide .sheet ul { padding-left: 1.3rem; margin: .5rem 0 .9rem; }
+.guide .sheet li + li { margin-top: .3rem; }
+.guide-table { width: 100%; border-collapse: collapse; margin: .6rem 0 .4rem; font-size: .9rem; }
+.guide-table th { text-align: left; font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 700; padding: 0 .5rem .35rem 0; border-bottom: 1.5px solid #dcd8cb; }
+.guide-table td { vertical-align: top; padding: .55rem .5rem .55rem 0; border-bottom: 1px solid #e4e1d6; line-height: 1.45; }
+.guide-table td:first-child { width: 38%; padding-right: .9rem; }
+.guide-table tr:last-child td { border-bottom: 0; }
+.guide .back { color: var(--brass); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
+.guide .toc { display: flex; flex-wrap: wrap; gap: .35rem 1rem; margin: 1rem 0 0; padding: 0; list-style: none; }
+.guide .toc a { color: #c5d0d9; font-size: .9rem; text-decoration: underline; text-decoration-color: #c5d0d966; text-underline-offset: 3px; }
+.guide .sample { margin: .9rem 0 0; }
+.guide .sample-link { color: var(--brass); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
+/* "How to use it" in the site footer */
+.foot .guide-link { color: var(--brass); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
