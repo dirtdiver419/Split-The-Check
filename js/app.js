@@ -132,7 +132,7 @@ function makeItem({ name = '', cents = null, qty = 1, qtyGuess = false, addon = 
     assigned: new Map(), uneven: false,
     addon, parentId, open: false,
     joined, qty, qtyGuess, guess: null, afterSubtotal,
-    menuOpen: false, splitN: null,
+    menuOpen: false,
   };
 }
 
@@ -520,7 +520,7 @@ function moveItem(item, dir) {
 /** One row becomes `n` rows with the same name, the price split evenly to the cent. */
 function splitRows(item, n) {
   if (n < 2 || state.items.length + n - 1 > LIMITS.items) return;
-  remember(`Split ${itemLabel(item)} into ${n} rows`);
+  remember(`Split ${itemLabel(item)} into ${n} items`);
   if (item.qtyGuess && n === item.qty) item.name = item.name.replace(/^\d{1,2}\s*/, ''); // "7 Layer Dip" x7 -> "Layer Dip"
   const parts = item.cents === null ? new Array(n).fill(null) : splitEven(item.cents, n);
   const copies = parts.map((c, k) => (k === 0 ? item : makeItem({ name: item.name, cents: c })));
@@ -528,7 +528,6 @@ function splitRows(item, n) {
   item.qty = 1;
   item.qtyGuess = false;
   item.menuOpen = false;
-  item.splitN = null;
   item.assigned = new Map();
   item.uneven = false;
   syncAddons(item);
@@ -670,10 +669,15 @@ function chipsFor(item, rerender) {
       })
     ));
   } else if (item.assigned.size >= 2) {
-    wrap.append(el('button', {
+    const links = el('div', { class: 'assign-links' }, el('button', {
       type: 'button', class: 'linkish', text: 'Uneven shares', 'data-key': `shares:${item.id}`,
       onclick: () => { item.uneven = true; syncAddons(item); rerender(); },
     }));
+    // A discount everyone shares equally may be meant for the whole bill, shared proportionally instead.
+    if (everyone && item.cents !== null && item.cents < 0 && !item.addon) {
+      links.append(el('button', { type: 'button', class: 'linkish', text: 'Move to discounts', 'data-key': `todisclink:${item.id}`, onclick: () => spreadDiscount(item) }));
+    }
+    wrap.append(links);
   }
   return wrap;
 }
@@ -772,20 +776,22 @@ function unitText(item) {
 
 function optionsMenu(item, above, isFirst, isLast) {
   const isDiscount = item.cents !== null && item.cents < 0;
-  const n = item.splitN ?? Math.max(2, shownQty(item));
   const menu = el('div', { class: 'opt-menu', id: `menu-${item.id}` });
   if (!isDiscount) {
     menu.append(
       optRow('Quantity', stepper(shownQty(item), 1, 20, 'Quantity', (v) => setQty(item, v), `menuqty:${item.id}`)),
-      optRow('Split into', el('span', { class: 'opt-split' },
-        stepper(n, 2, 20, 'Split into', (v) => { item.splitN = v; renderItems(); }, `rows:${item.id}`),
-        el('button', { type: 'button', class: 'pill', text: 'Split', 'data-key': `split:${item.id}`, 'aria-label': `Split into ${n}`, onclick: () => splitRows(item, n) }))),
+      // Grayed out (not hidden) at quantity 1, so it's clear where splitting lives.
+      el('button', {
+        type: 'button', class: 'opt-action', 'data-key': `split:${item.id}`, disabled: shownQty(item) < 2,
+        onclick: () => splitRows(item, shownQty(item)),
+      }, el('span', { text: 'Split by quantity' }), el('span', { class: 'chev', 'aria-hidden': 'true', text: '›' })),
       optAction('Add an add-on', () => addAddon(item), `addaddon:${item.id}`)
     );
   }
   if (!isFirst && above && !isBlank(above)) {
     menu.append(optAction(`Attach to ${above.name || 'the item above'}`, () => makeAddonOf(item, above), `attach:${item.id}`));
   }
+  if (isDiscount) menu.append(optAction('Move to discounts', () => spreadDiscount(item), `todisc:${item.id}`));
   menu.append(optRow('Move this item', el('span', { class: 'opt-move' },
     el('button', { type: 'button', class: 'step-btn', text: '↑', 'aria-label': 'Move up', disabled: isFirst, 'data-key': `up:${item.id}`, onclick: () => moveItem(item, -1) }),
     el('button', { type: 'button', class: 'step-btn', text: '↓', 'aria-label': 'Move down', disabled: isLast, 'data-key': `down:${item.id}`, onclick: () => moveItem(item, 1) }))));
@@ -824,12 +830,11 @@ function drawItems() {
         item.qtyGuess && item.qty > 1 && !isDiscount
           ? el('button', { type: 'button', class: 'linkish split-link', text: `Split into ${item.qty}?`, onclick: () => splitQuantity(item) })
           : null,
-        isDiscount ? el('button', { type: 'button', class: 'btn-confirm', text: 'Spread over the whole bill', onclick: () => spreadDiscount(item) }) : null,
         isBlank(item) ? null : optButton(item.menuOpen, `opt:${item.id}`, () => { item.menuOpen = !item.menuOpen; renderItems(); }, `Options for ${label}`)
       ),
       priceErr
     );
-    if (isDiscount) li.append(el('p', { class: 'discount-note', text: 'A discount. Tap who it was for, or spread it over everyone by what they ordered.' }));
+    if (isDiscount) li.append(el('p', { class: 'discount-note', text: 'Discount' }));
 
     if (item.joined) {
       li.append(el('div', { class: 'item-tags' }, el('span', { class: 'tag tag-joined' },
@@ -880,16 +885,24 @@ function renderCheck() {
       out.textContent = `Items${fees} add up to ${formatMoney(sum)}, matching the receipt's subtotal${guessed ? ' (with a guessed price)' : ''}.`;
     } else {
       short = diff > 0;
-      out.className = 'check warn';
       const gap = Math.abs(diff);
-      out.textContent = `Items${fees} add up to ${formatMoney(sum)}, ${formatMoney(gap)} ${short ? 'less' : 'more'} than the receipt's subtotal of ${formatMoney(subtotalCents)}. Check the prices and totals against the photo.`;
+      const before = `Items${fees} add up to ${formatMoney(sum)}, ${formatMoney(gap)} ${short ? 'less' : 'more'} than the receipt's subtotal of ${formatMoney(subtotalCents)}.`;
+      // The receipt undercharged and the difference is already taken off: just say so, quietly.
+      if (!short && state.discounts.some((r) => r.name === DIFF_NAME && chargeCents(r) === gap)) {
+        out.className = 'check settled';
+        out.textContent = `${before} The difference is taken off as a discount.`;
+        renderTotals();
+        return;
+      }
+      out.className = 'check warn';
+      out.textContent = `${before} Check the prices and totals against the photo.`;
       const noPrice = state.items.some((i) => i.cents === null && !isBlank(i));
       if (short && !noPrice) {
         out.append(el('br'), el('button', {
           type: 'button', class: 'btn btn-quiet fix-btn', text: `Add the missing ${formatMoney(diff)}`,
           onclick: () => addMissing(diff),
         }));
-      } else if (!short && !state.discounts.some((r) => r.name === DIFF_NAME && chargeCents(r) === gap)) {
+      } else if (!short) {
         // The prices are right but the receipt charged less: everyone shares the difference by order.
         out.append(el('br'), el('button', {
           type: 'button', class: 'btn btn-quiet fix-btn', text: `Take ${formatMoney(gap)} off as a discount`,
@@ -956,7 +969,7 @@ function readMoneyField(id) {
 const readDisc = () => sumCharges(state.discounts);
 
 function spreadDiscount(item) {
-  remember(`Spread ${itemLabel(item)} over the whole bill`);
+  remember(`Moved ${itemLabel(item)} to discounts`);
   state.discounts.push({ id: newId(), name: item.name || 'Discount', raw: centsToInput(Math.abs(item.cents)) });
   for (const a of addonsOf(item)) { a.addon = false; a.parentId = null; }
   const tops = topItems();
@@ -1055,7 +1068,7 @@ function chargeRow(row, kind) {
       },
     });
     line.append(el('div', { class: 'chips', role: 'group', 'aria-label': `How to split ${label}` },
-      mode(true, 'Split evenly'), mode(false, 'By order')));
+      mode(true, 'Equal'), mode(false, 'Proportional')));
   }
   line.append(optButton(Boolean(row.menuOpen), `opt:${row.id}`, () => { row.menuOpen = !row.menuOpen; renderCharges(); }, `Options for ${label}`));
   if (row.menuOpen) {
@@ -1715,8 +1728,8 @@ function renderAll() {
  */
 const photoPool = new Set();
 
-function newPhoto(file, { crop = null, rotation = 0 } = {}) {
-  const photo = { id: newId(), file, url: URL.createObjectURL(file), cropUrl: null, crop, rotation };
+function newPhoto(file, { crop = null, rotation = 0, sample = false } = {}) {
+  const photo = { id: newId(), file, url: URL.createObjectURL(file), cropUrl: null, crop, rotation, sample };
   photoPool.add(photo);
   return photo;
 }
@@ -1809,7 +1822,7 @@ function photoNote(heads = []) {
   const fromPhotos = state.items.filter((i) => i.photoId);
   if (!fromPhotos.length) return { found: null, figs: null, heads };
   const f = state.found;
-  const lines = [...heads];
+  const lines = state.photos.some((ph) => ph.sample) ? [['This is a sample bill. Start over clears it.'], ...heads] : [...heads];
   if ((f.sub === null || f.sub === undefined) && (f.total === null || f.total === undefined)) lines.push(['Looks cut off. ', { link: 'add' }]);
   return { found: foundText(fromPhotos), figs: figsOf(f), heads: lines };
 }
@@ -2099,12 +2112,12 @@ function checkFile(file) {
 const READ_FAILED = 'Couldn’t read that photo. Try again with the receipt flat and well lit.';
 
 /** A new photo: replaces everything read so far. */
-async function scan(file) {
+async function scan(file, { sample = false } = {}) {
   showError('');
   if (!checkFile(file) || !(await confirmReplace())) return;
   const snap = snapshot();
   const had = realItems().length > 0; // a first reading has nothing to go back to
-  const photo = newPhoto(file);
+  const photo = newPhoto(file, { sample });
   const parsed = await read(() => decodeImage(file));
   if (parsed === STALE) { releasePhotos(); return; }
   if (parsed) {
@@ -2561,7 +2574,7 @@ async function readCrop() {
   const screen = $('crop-canvas');
   screen.width = 0;
   screen.height = 0;
-  const photo = newPhoto(old.file, { crop: r, rotation });
+  const photo = newPhoto(old.file, { crop: r, rotation, sample: old.sample });
   const parsed = await read(async () => {
     const out = cropCanvas(img, r, rotation);
     if (typeof img.close === 'function') img.close();
@@ -2754,3 +2767,20 @@ $('copy-fallback-close').addEventListener('click', () => {
 });
 
 renderAll();
+
+/*
+ * The guide's "Try it with a sample bill" opens index.html#sample: read the made-up receipt
+ * that ships with the site, then drop "#sample" so a refresh starts empty.
+ */
+async function loadSample() {
+  history.replaceState(null, '', location.pathname + location.search);
+  try {
+    const res = await fetch('img/sample-receipt.jpg');
+    if (!res.ok) throw new Error('missing');
+    const file = new File([await res.blob()], 'sample-receipt.jpg', { type: 'image/jpeg' });
+    await scan(file, { sample: true });
+  } catch {
+    showError('Couldn’t open the sample bill. Refresh the page and try again.');
+  }
+}
+if (location.hash === '#sample') loadSample();

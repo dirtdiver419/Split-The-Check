@@ -30,7 +30,7 @@ const RE = {
   // Flat per-order charges (delivery, small order) that are fairer split evenly.
   even: CHARGE_RE.even,
   // Words that tie a negative amount to the whole bill rather than the dish above it.
-  billDiscount: /\bcoupon\b|\border\b|\bcheck\b|\bbill\b|\bloyalty\b|\breward|\bmember|\bemployee\b|\bvoucher\b|\bgift\b|%/,
+  billDiscount: /\bcoupon\b|\bdiscount\b|\bpromo(tion)?\b|\border\b|\bcheck\b|\bbill\b|\bloyalty\b|\breward|\bmember|\bemployee\b|\bvoucher\b|\bgift\b|%/,
   void: /\bvoid(ed)?\b|\bcancel(l?ed)?\b|\bdeleted\b|\brefund(ed)?\b/,
   vatIncluded: /\bincl(\.|uded|udes)?\b.*\b(vat|tax|gst|mwst|tva|iva)\b|\b(vat|tax|gst)\b.*\bincl/,
   skip:
@@ -40,6 +40,10 @@ const RE = {
 
 const ADDON_SYMBOL = /^[-+*>~•·]\s*(?=\p{L})/u;
 const ADDON_WORD = /^(?:(?:add|added|extra|xtra|sub|substitute|with|side\s+of|no)\b|w\/)/i;
+// Words that, right after a number, are part of a dish's name or a count ("7 Layer Dip", "6 Piece Nuggets").
+// After any other word, a plain leading number is read as the quantity. Alphabetical.
+const NAME_AFTER_NUMBER = /^(?:alarm|bean|cheese|count|ct|grain|island|layer|oz|pc|pcs|piece|seasons|spice|star|treasure|way)\b/i;
+
 const QTY_PREFIX = /^(\d{1,2})\s*([xX×])?\s+(?=[\p{L}\-+*>~(]|\d{1,2}\s+\p{L})/u; // also "1 7 Layer Dip"
 const PLAIN_QTY_LINE = /^\d{1,2}\s+\p{L}/u;
 const COL_QTY = /\s(\d{1,2})$/; // a lone number between the name and the price
@@ -131,9 +135,9 @@ function splitPrice(line) {
 
 /**
  * Pull quantity and unit-price clutter off a label.
- * A plain leading number ("7 Layer Dip") is only treated as a quantity when the
- * receipt prints quantities on its lines; otherwise it stays in the name and the
- * row offers "Split into 7?" instead (qtyGuess).
+ * A plain leading number is read as the quantity ("2 Salmon Nigiri"), unless the
+ * word after it usually belongs to the name ("7 Layer Dip"). Then it stays in the
+ * name and the row offers "Split into 7?" instead (qtyGuess).
  */
 function takeQuantity(label, printsQty = false, colQty = false) {
   let qty = 1;
@@ -153,7 +157,8 @@ function takeQuantity(label, printsQty = false, colQty = false) {
   if (pre) {
     qty = Number(pre[1]);
     const symbolNext = /^[-+*>~•·]/.test(s.slice(pre[0].length)); // "2 -Fried Egg"
-    if (pre[2] || qty === 1 || printsQty || unit || symbolNext) s = s.slice(pre[0].length); // clearly a quantity
+    const partOfName = NAME_AFTER_NUMBER.test(s.slice(pre[0].length));
+    if (pre[2] || qty === 1 || printsQty || unit || symbolNext || !partOfName) s = s.slice(pre[0].length); // a quantity
     else qtyGuess = true; // keep "7 Layer Dip" whole
   }
   const col = colQty && !pre ? s.match(COL_QTY) : null; // "Burger   2   26.00"
