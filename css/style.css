@@ -325,7 +325,6 @@ input[type="text"][aria-invalid="true"]:focus { border: 2px solid var(--alert); 
 .addon { border-left: 2px solid var(--paper-edge); padding: .4rem .55rem; font-size: .92rem; }
 .addon-row { display: flex; align-items: center; gap: .5rem; }
 .addon-name { flex: 1; overflow-wrap: anywhere; }
-.addon-name small { display: block; color: var(--muted); font-size: .8rem; }
 .addon-price { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
 .addon-edit { margin-top: .4rem; }
 .addon-edit .item-top { margin-bottom: .1rem; }

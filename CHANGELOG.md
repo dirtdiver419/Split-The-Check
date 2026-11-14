@@ -5,6 +5,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.1] - 2026-11-14
+
+### Fixed
+
+- The sample bill's tea came out as "Green Tea DER SE" in some browsers. The reader was seeing letters in the thin lines printed between sections and gluing them onto the dish above. Three fixes, any one of which would have done it:
+  - The site now shrinks and enlarges photos itself (js/image.js) instead of leaving it to the browser. Safari's built-in shrinking is rougher than Chrome's and turns a thin printed line into speckles that look like letters. Now every browser hands the reader the same picture. Each output pixel is the average of every photo pixel it covers, so a line fades to gray instead of breaking up. Photos over 16 megapixels are first brought down part way by the browser, to keep phones from running out of memory.
+  - A line with no price that is short, all capitals, and made only of one- to three-letter scraps that aren't real bill words ("DER SE") is dropped instead of being joined to the dish above. Real short bill words still join and still count, like SM, LG, XL, NO ICE, ADD EGG, TO GO, BBQ, PHO, BLT, IPA and OJ, plus every three-letter food word on the list.
+  - The sample photo is bigger and sharper, with blank space instead of printed lines between sections.
+
+### Changed
+
+- Add-ons no longer say "Goes with [dish]" under their name. They sit right under their dish anyway.
+- The word list that repairs the reader's i/l mix-ups went from 518 words to about 6,000. It now covers German (Hamburg, the north and NRW included), Spanish and Persian in depth, plus Puerto Rican, French, British and Irish, Ethiopian, Scandinavian, Austrian, Swiss, Greek, Turkish, Vietnamese, regional Chinese, Filipino, Lebanese and Middle Eastern, Moroccan, Caribbean, Cuban, Peruvian, Brazilian and Argentine, Cajun and Southern, Hawaiian, Polish, Ukrainian and Hungarian, Portuguese, Indonesian, Malaysian and Singaporean, Nepali, Tibetan and Pakistani, Dutch and Belgian, Balkan, Georgian, Russian and Central Asian, West African, more Latin American, Israeli and Afghan, Sri Lankan, Burmese, Lao and Cambodian. Also bar, brewery, café and bakery words, bubble tea, wine grapes, cocktails, steak cuts and barbecue, pizza toppings, sushi rolls, and diet tags like GF and vegan. So "Khachapur1" becomes Khachapuri and "Fr1kandel" becomes Frikandel. German words are on the list both as "broetchen" and "brotchen", since the reader turns an umlaut into either.
+- Every word was checked against common English, German, Spanish and French words that differ only by an i or an l. A few words that would have turned real bill words into food words were left off (vla, which would turn "via" into "vla", for example). A few real food words were added so their twins stay put, like "tail" so a lobster tail doesn't become a lobster tall. A capital L is never treated as a possible i, so CHILL printed in capitals stays CHILL, while a lowercase "Chill" now becomes Chili.
+
 ## [2.6.0] - 2026-11-14
 
 ### Added

@@ -1,6 +1,7 @@
 import { parseMoney, parsePercent, formatMoney, centsToInput, computeSplit, splitEven, settleUp } from './split.js';
 import { bestParse, pairColumns, textFromWords, wordsFromBlocks, linesFromBlocks, scoreParse } from './parse.js';
 import { CHARGE_RE } from './charges.js';
+import { toGray, resampleGray } from './image.js';
 
 // Everything lives in this object, in memory only. No localStorage, no cookies,
 // no IndexedDB, no network writes. Refreshing the page wipes it.
@@ -730,7 +731,7 @@ function renderAddon(addon, parent) {
 
   if (!addon.open) {
     li.append(el('div', { class: 'addon-row' },
-      el('span', { class: 'addon-name' }, `+ ${addon.qty > 1 ? `${addon.qty}× ` : ''}${name}`, el('small', { text: `Goes with ${parent.name || 'this dish'}` })),
+      el('span', { class: 'addon-name' }, `+ ${addon.qty > 1 ? `${addon.qty}× ` : ''}${name}`),
       el('span', { class: 'addon-price', text: addon.cents === null ? '—' : formatMoney(addon.cents) }),
       optButton(false, `addon:${addon.id}`, () => {
         addon.open = true;
@@ -1883,17 +1884,31 @@ function grayCanvas(source) {
   const w = Math.max(1, Math.round(w0 * scale));
   const h = Math.max(1, Math.round(h0 * scale));
 
+  // Read the photo at full size and shrink it here, not with the browser (see image.js).
+  // Huge photos are first brought down to twice the target so phones don't run out of memory.
+  let rw = w0;
+  let rh = h0;
+  if (w0 * h0 > 16e6 && scale < 0.5) { rw = Math.round(w * 2); rh = Math.round(h * 2); }
+  const read = document.createElement('canvas');
+  read.width = rw;
+  read.height = rh;
+  const rctx = read.getContext('2d', { willReadFrequently: true });
+  rctx.imageSmoothingQuality = 'high';
+  rctx.drawImage(source, 0, 0, rw, rh);
+  const lum = resampleGray(toGray(rctx.getImageData(0, 0, rw, rh).data, rw, rh), rw, rh, w, h);
+  read.width = 0;
+  read.height = 0;
+
   const canvas = document.createElement('canvas');
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(source, 0, 0, w, h);
-  const img = ctx.getImageData(0, 0, w, h);
+  const img = ctx.createImageData(w, h);
   const d = img.data;
-  for (let i = 0; i < d.length; i += 4) {
-    const y = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+  for (let i = 0, j = 0; j < lum.length; i += 4, j++) {
+    const y = lum[j];
     d[i] = d[i + 1] = d[i + 2] = y;
+    d[i + 3] = 255;
   }
   ctx.putImageData(img, 0, 0);
   return canvas;

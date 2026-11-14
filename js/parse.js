@@ -61,6 +61,29 @@ const XH_SMALL = 0.88;
 const XH_SMALL_TILTED = 0.85;
 const TILT = 0.02; // baseline slope beyond which word boxes stop being trustworthy (about 1 degree)
 
+/* ------------------------------------------------------------ junk lines */
+
+// Short words that are real on a bill, so a line made of them is never junk.
+const SHORT_OK = new Set(`
+a w n x no add sub xtra hot ice dry out side of on in or to go the and
+sm md med lg xl xxl reg lrg sml jr sr doz pc pcs oz ct lb ea pt qt gal cup mug can btl gl dbl
+one two six ten big kid mix new
+blt bbq pho ipa oj bao pot pie dal tea ale egg ham rye yam fry bun dip jam nut cod eel ahi lox
+`.trim().split(/\s+/));
+
+/**
+ * A no-price line that is short, all capitals, and made only of 1–3 letter
+ * scraps that aren't real bill words ("DER SE") is the reader seeing letters in
+ * a printed rule or a smudge. It must not be glued onto the dish above it.
+ */
+export function isJunkLine(text) {
+  const t = String(text || '').trim();
+  if (!t || t.length > 12 || !/\p{Lu}/u.test(t) || t !== t.toUpperCase()) return false;
+  const tokens = t.split(/\s+/).filter((x) => !/\d/.test(x)).map((x) => x.replace(/[^\p{L}]/gu, '').toLowerCase()).filter(Boolean);
+  if (!tokens.length) return false;
+  return tokens.every((x) => x.length <= 3 && !SHORT_OK.has(x) && !WORDS.has(x));
+}
+
 /* --------------------------------------------------------------- spelling */
 
 const AMBIG = new Set(['l', 'i', '1', '|', 'I']);
@@ -459,6 +482,7 @@ export function parseLines(input) {
     // On receipts printed in one font size, an indented line is a description, not a wrapped name.
     const indented = raw.nameX != null && lastItemLine?.nameX != null
       && raw.nameX - lastItemLine.nameX > 0.5 * (lastItemLine.xh || raw.xh || 20);
+    if (isJunkLine(name)) continue;
     if (wasAfterItem && target && !target.joined && !hadQty && !indented && name.length <= 30 && sameSize) {
       target.joined = { base: target.name, extra: name };
       target.name = `${target.name} ${name}`.slice(0, 60);
