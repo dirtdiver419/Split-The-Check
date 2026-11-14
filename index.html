@@ -118,7 +118,7 @@
           <button id="fee-add" class="linkish" type="button">+ Add a fee</button>
           <span id="fee-sum" class="charge-sum"></span>
         </div>
-        <p class="note">Split evenly suits flat charges like delivery. By order splits it like tax, by what each person ordered.</p>
+        <p class="note">Equal suits flat charges like delivery. Proportional splits it like tax.</p>
       </div>
       <button id="fee-show" class="linkish fee-show" type="button">Add a fee or surcharge</button>
 
@@ -129,7 +129,7 @@
           <button id="disc-add" class="linkish" type="button">+ Add a discount</button>
           <span id="disc-sum" class="charge-sum"></span>
         </div>
-        <p class="note">Shared by what each person ordered.</p>
+        <p class="note">Shared proportionally.</p>
       </div>
       <button id="disc-show" class="linkish fee-show" type="button">Add a discount</button>
 
@@ -174,8 +174,8 @@
       <div class="field tip-split">
         <p class="field-label" id="tip-split-label">Split the tip</p>
         <div class="chips" id="tip-split" role="group" aria-labelledby="tip-split-label">
-          <button type="button" class="chip" data-even="0" aria-pressed="true">By order</button>
-          <button type="button" class="chip" data-even="1" aria-pressed="false">Split evenly</button>
+          <button type="button" class="chip" data-even="1" aria-pressed="false">Equal</button>
+          <button type="button" class="chip" data-even="0" aria-pressed="true">Proportional</button>
         </div>
       </div>
     </section>
@@ -207,7 +207,8 @@
   <footer class="foot">
     <p>Nothing on this page is stored. Close or refresh it and everything's gone.</p>
     <p class="disclaimer">Not financial advice. The receipt reader can make mistakes, so check the items, prices and totals against the actual receipt before anyone pays.</p>
-    <p class="version">Version 2.5.1</p>
+    <p><a class="guide-link" href="guide.html">How to use it</a></p>
+    <p class="version">Version 2.6.0</p>
   </footer>
 
   <div id="undo-bar" class="undo-bar" role="status" aria-live="polite" hidden>

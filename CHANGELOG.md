@@ -5,6 +5,28 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] - 2026-11-14
+
+### Added
+
+- **How to use it**: a guide page (guide.html), linked at the bottom of the site. One section per step of the site, each with a table of what every button does, plus Undo, privacy and troubleshooting. Plain HTML, no scripts.
+- **Try it with a sample bill**, at the top of the guide. It opens the site with a made-up receipt from "Sample Udon" and reads it with the real reader, so every tool works on it, including **Crop and re-read** and **Deep scan**. A note says it's a sample, and **Start over** clears it. The `#sample` part of the address is removed once it loads, so a refresh starts empty.
+- **Split by quantity** in an item's **Options**, right under **Quantity**: a row of 3 burgers becomes 3 rows of 1 burger each, the price divided evenly. It's grayed out while the quantity is 1.
+- **Move to discounts** on discount rows, in **Options**, and as a link next to **Uneven shares** when **Everyone** is selected. It moves the discount to the Discounts list in step 4, shared proportionally.
+
+### Changed
+
+- "Equal" and "Proportional" are the names for how a fee or the tip is shared (they were "Split evenly" and "By order"), with **Equal** first in both places. Proportional means by how much each person ordered.
+- The Discounts list says "Shared proportionally."
+- A discount row's note just says "Discount". **Spread over the whole bill** is gone; **Move to discounts** replaces it.
+- Once the receipt's difference is taken off as a discount, the check under the items turns from a red warning into a muted note with a khaki edge: "…The difference is taken off as a discount." If a price or the discount changes so they no longer match, it goes back to red.
+- A plain number at the start of a line is now read as the quantity: "2 Salmon Nigiri 9.00" becomes 2 × $4.50. When the next word usually belongs to the dish's name, like "7 Layer Dip", "3 Cheese Pizza" or "6 Piece Nuggets", the number stays in the name and **Split into 7?** is offered as before.
+- Lines with "discount" or "promo" in them are read as discounts on the whole bill, even when printed right under a dish.
+
+### Removed
+
+- The **Split into − N + [Split]** control in Options. **Split by quantity** does the same job with one tap.
+
 ## [2.5.1] - 2026-11-12
 
 ### Changed
