@@ -520,7 +520,7 @@ body.no-scroll { overflow: hidden; }
 .seg label:has(input:checked) { background: #E3DBC2; color: var(--brass-ink); border-color: #7a6430; }
 
 /* quieter "add" links in step 4 */
-#fee-show, #disc-show { color: var(--muted); text-decoration-color: #5d6a7580; }
+#fee-show, #grat-show, #disc-show { color: var(--muted); text-decoration-color: #5d6a7580; }
 
 /* item rows: price line ends with Options */
 .item-price .unit { color: var(--muted); font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -762,3 +762,7 @@ body.no-scroll { overflow: hidden; }
 /* Each payer's Percent | Amount: two equal halves, words centered. */
 .payer-block .seg { display: flex; }
 .payer-block .seg label { flex: 1 1 0; display: flex; align-items: center; justify-content: center; text-align: center; }
+
+/* ================= 2.9.1 ================= */
+#cards-check:focus { outline: none; }
+#cards-check:focus-visible { outline: 3px solid var(--booth); outline-offset: 3px; }

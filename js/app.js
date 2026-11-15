@@ -1007,6 +1007,13 @@ async function fixTotalDifference() {
   $('total-check').focus();
 }
 
+/** From the end line: bring "Paid so far" under the payers' cards into view. */
+function jumpToPaid() {
+  const out = $('cards-check');
+  out.scrollIntoView({ block: 'center', behavior: reducedMotion() ? 'auto' : 'smooth' });
+  out.focus({ preventScroll: true });
+}
+
 /** From the end line: bring the total check into view. */
 function jumpToTotal() {
   const out = $('total-check');
@@ -1403,6 +1410,10 @@ function readCardsTip(tax, fee, disc) {
   if (paidSum < bill) {
     return { error: `The payments add up to ${formatMoney(paidSum)}, ${formatMoney(bill - paidSum)} less than the bill before tips (${formatMoney(bill)}).`, short: true, cards };
   }
+  // Paying more than the bill before tips is a mistake somewhere, like an item nobody claimed: hold the split.
+  if (paidSum > bill) {
+    return { error: `The payments are ${formatMoney(paidSum - bill)} more than the ${formatMoney(bill)} bill before tips. Select to jump to it.`, over: true, cards };
+  }
   return { cents: sum - bill, cards, noTip };
 }
 
@@ -1600,7 +1611,7 @@ function gather() {
   let noTip = null; // who has a blank tip box: shown as "No tip added", it doesn't hold the split
   if (multiPay()) {
     const r = readCardsTip(tax, fee, disc);
-    if (r.error) return { block: { text: r.error }, cardsShort: r.short };
+    if (r.error) return { block: { text: r.error, go: r.over ? jumpToPaid : null }, cardsShort: r.short };
     tip = r.cents;
     cards = r.cards;
     noTip = r.noTip.length ? r.noTip : null;

@@ -84,7 +84,7 @@
         <button id="person-add" class="btn btn-primary" type="button">Add</button>
       </div>
       <ul id="people" class="people" aria-label="People at the table"></ul>
-      <p id="people-hint" class="note">Add everyone who's splitting, including you. Mark everyone who put money on the bill. With two or more payers, you'll enter what each one paid in step 4.</p>
+      <p id="people-hint" class="note">Add everyone who's splitting, including you. Mark everyone who put money on the bill.</p>
     </section>
 
     <section class="sheet" aria-labelledby="h-items">
@@ -182,7 +182,7 @@
       <div id="payers" hidden>
         <p class="payers-title">What each payer put on their card</p>
         <div id="payer-blocks"></div>
-        <p id="cards-check" class="check"></p>
+        <p id="cards-check" class="check" tabindex="-1"></p>
         <p id="cards-tip" class="tip-cards" aria-live="polite"></p>
       </div>
 
@@ -223,7 +223,7 @@
     <p>Nothing on this page is stored. Close or refresh it and everything's gone.</p>
     <p class="disclaimer">Not financial advice. The receipt reader can make mistakes, so check the items, prices and totals against the actual receipt before anyone pays.</p>
     <p><a class="guide-link" href="guide.html">How to use it</a></p>
-    <p class="version">Version 2.9.0</p>
+    <p class="version">Version 2.9.1</p>
   </footer>
 
   <div id="undo-bar" class="undo-bar" role="status" aria-live="polite" hidden>

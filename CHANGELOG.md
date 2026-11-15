@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.1] - 2026-11-15
+
+### Changed
+
+- When the payers' amounts add up to more than the bill before tips, the split now waits, the same way it does for an unclaimed item. Paying too much before tips means something's off, like a typo or a tip entered as part of the payment. The end line says by how much, and selecting it jumps to "Paid so far."
+- **Add a gratuity** is the same quiet gray as **Add a fee or surcharge** and **Add a discount**. It had been left out of the rule that styles the other two.
+- Step 2's hint no longer mentions entering payments in step 4, since step 4 says so when it gets there.
+
 ## [2.9.0] - 2026-11-15
 
 ### Added
