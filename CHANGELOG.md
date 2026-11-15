@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.1] - 2026-11-15
+
+### Changed
+
+- **Straighten** has an **Automatic** | **Manual** toggle. It always shows which one is in charge, highlighted gold like the site's other toggles. Moving the slider or tapping **−** or **+** switches to **Manual**, and Manual reads exactly the angle on screen, nothing more. That includes 0.0°, which used to mean "automatic" and couldn't be locked. Tapping **Automatic** turns the photo back to the measured angle.
+- The crop screen now opens turned the way the photo was actually read. So if automatic straightening turned it 5°, the slider starts at 5.0° on Automatic, and the first tap of **+** gives 5.5° instead of jumping back to the crooked original.
+- Automatic straightening starts at 1° of lean instead of 3°. Below 1° the measurement can't tell a lean from noise. The sample bill leans about 2.4°, so it's straightened now too.
+
 ## [2.7.0] - 2026-11-15
 
 ### Added

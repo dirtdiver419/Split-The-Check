@@ -1725,18 +1725,19 @@ function renderAll() {
 /*
  * Photos of the receipt, in memory only. A long receipt can be several photos ("parts").
  * Each record is fixed once made: a new crop makes a new record, so Undo can go back to the old one.
- * photo = { id, file, url, cropUrl, straightUrl, crop, rotation, fine, autoAngle, sample }
+ * photo = { id, file, url, cropUrl, straightUrl, crop, rotation, fine, manual, autoAngle, sample }
  *   rotation  = quarter turns from the crop screen (0/90/180/270)
- *   fine      = the person's own straightening angle from the slider (0 = automatic)
- *   autoAngle = how far automatic straightening turned it (0 = not needed)
+ *   fine      = the Straighten angle the crop screen turned it by, before cropping (degrees, clockwise)
+ *   manual    = true when that angle was set by hand: it's read exactly, nothing turns it further
+ *   autoAngle = the lean automatic straightening measured and removed after cropping (0 = none)
  *   straightUrl = the straightened color photo, shown in place of the photo when set
  */
 const photoPool = new Set();
-const STRAIGHTEN_MIN = 3; // degrees of lean before automatic straightening steps in
+const STRAIGHTEN_MIN = 1; // degrees of lean before automatic straightening steps in (finer than the measurement is sure of)
 const CORNER_GRAY = '#9ba3aa'; // fills the corners a turned photo leaves empty
 
-function newPhoto(file, { crop = null, rotation = 0, fine = 0, sample = false } = {}) {
-  const photo = { id: newId(), file, url: URL.createObjectURL(file), cropUrl: null, straightUrl: null, crop, rotation, fine, autoAngle: 0, sample };
+function newPhoto(file, { crop = null, rotation = 0, fine = 0, manual = false, sample = false } = {}) {
+  const photo = { id: newId(), file, url: URL.createObjectURL(file), cropUrl: null, straightUrl: null, crop, rotation, fine, manual, autoAngle: 0, sample };
   photoPool.add(photo);
   return photo;
 }
@@ -2259,9 +2260,9 @@ async function read(getSource, { darker = false, photo = null } = {}) {
     const source = await getSource();
     gray = grayCanvas(source);
     evened = evenedCanvas(gray);
-    // Automatic straightening, unless the person set an angle on the slider themselves.
+    // Automatic straightening, unless the person set the angle by hand (Manual).
     // Only the reader's copy is turned here. The color copy is turned for showing.
-    if (photo && !photo.fine) {
+    if (photo && !photo.manual) {
       const angle = skewOf(evened);
       if (Math.abs(angle) >= STRAIGHTEN_MIN) {
         const sg = turnedCanvas(gray, -angle, '#ffffff');
@@ -2565,7 +2566,10 @@ async function openCrop() {
   }
   // The crop screen always shows the whole photo, so a crop can be widened again.
   crop.photo = photo;
-  crop.work = { rotation: photo.rotation, fine: photo.fine || 0, crop: photo.crop ? { ...photo.crop } : fullCrop() };
+  crop.work = { rotation: photo.rotation, fine: photo.fine || 0, manual: Boolean(photo.manual), auto: 0, crop: photo.crop ? { ...photo.crop } : fullCrop() };
+  // Automatic opens turned the way the photo was read, so the first nudge starts from there.
+  crop.work.auto = photo.manual ? autoFineFor(crop.img, photo.rotation) : clampFine((photo.fine || 0) - (photo.autoAngle || 0));
+  if (!crop.work.manual) crop.work.fine = crop.work.auto;
   $('crop').hidden = false;
   document.body.classList.add('no-scroll');
   showFine();
@@ -2640,20 +2644,44 @@ function onHandleKey(e) {
   resizeCrop(handle, ...moves[e.key]);
 }
 
-/* Straighten slider: −15° to +15° in half degrees. 0 means automatic straightening. */
+/*
+ * Straighten: −15° to +15° in half degrees, plus Automatic | Manual.
+ * Automatic turns the photo to the measured angle and may fine-tune it while reading.
+ * Manual reads exactly the angle shown, 0.0° included.
+ */
 const FINE_MAX = 15;
-const fineText = (v) => (v === 0 ? 'Automatic' : `${v < 0 ? '−' : ''}${Math.abs(v).toFixed(1)}°`);
-const fineSpoken = (v) => (v === 0 ? 'Automatic' : `${Math.abs(v)} degrees ${v < 0 ? 'left' : 'right'}`);
+const clampFine = (v) => Math.max(-FINE_MAX, Math.min(FINE_MAX, Math.round(Number(v) * 2) / 2)) || 0;
+const fineText = (v) => `${v < 0 ? '−' : ''}${Math.abs(v).toFixed(1)}°`;
+const fineSpoken = (v) => (v === 0 ? 'Level' : `${Math.abs(v)} degrees ${v < 0 ? 'left' : 'right'}`);
 
-/** Show the slider's angle: the number, and gold from the middle of the track out to the knob. */
+/** The automatic angle for the photo as the crop screen shows it (quarter turns applied). */
+function autoFineFor(img, rotation) {
+  const { w, h } = srcSize(img);
+  const s = Math.min(1, 1200 / Math.max(w, h));
+  const rw = Math.round((rotation % 180 ? h : w) * s);
+  const rh = Math.round((rotation % 180 ? w : h) * s);
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, rw);
+  c.height = Math.max(1, rh);
+  const ctx = c.getContext('2d');
+  ctx.scale(s, s);
+  drawRotated(ctx, img, rw / s, rh / s, rotation);
+  const g = grayCanvas(c);
+  const e = evenedCanvas(g);
+  const lean = skewOf(e);
+  for (const x of [c, g, e]) { x.width = 0; x.height = 0; }
+  return Math.abs(lean) >= STRAIGHTEN_MIN ? clampFine(-lean) : 0;
+}
+
+/** Show the angle, the mode, and gold from the middle of the track out to the knob. */
 function showFine() {
   const v = crop.work.fine;
   const range = $('crop-angle');
   range.value = String(v);
   range.setAttribute('aria-valuetext', fineSpoken(v));
-  const out = $('crop-angle-val');
-  out.textContent = fineText(v);
-  out.classList.toggle('auto', v === 0);
+  $('crop-angle-val').textContent = fineText(v);
+  $('crop-mode-auto').checked = !crop.work.manual;
+  $('crop-mode-manual').checked = crop.work.manual;
   const at = ((v + FINE_MAX) / (2 * FINE_MAX)) * 100;
   range.style.setProperty('--from', `${Math.min(50, at)}%`);
   range.style.setProperty('--to', `${Math.max(50, at)}%`);
@@ -2661,17 +2689,28 @@ function showFine() {
   $('crop-angle-up').disabled = v >= FINE_MAX;
 }
 
+/** Moving the slider or tapping − / + sets the angle by hand. */
 function setFine(v) {
-  const n = Math.max(-FINE_MAX, Math.min(FINE_MAX, Math.round(Number(v) * 2) / 2)) || 0;
-  if (n === crop.work.fine) { showFine(); return; }
+  const n = clampFine(v);
+  crop.work.manual = true;
+  const moved = n !== crop.work.fine;
   crop.work.fine = n;
   showFine();
-  drawCrop();
+  if (moved) drawCrop();
+}
+
+function setMode(manual) {
+  crop.work.manual = manual;
+  const moved = !manual && crop.work.fine !== crop.work.auto;
+  if (!manual) crop.work.fine = crop.work.auto;
+  showFine();
+  if (moved) drawCrop();
 }
 
 function rotateCrop() {
   crop.work.rotation = (crop.work.rotation + 90) % 360;
   crop.work.crop = fullCrop();
+  // A quarter turn doesn't change how far the print leans, so the angle carries over.
   drawCrop();
 }
 
@@ -2684,7 +2723,7 @@ async function readCrop() {
   const snap = snapshot();
   const had = realItems().length > 0;
   const img = crop.img;
-  const { rotation, fine, crop: r } = crop.work;
+  const { rotation, fine, manual, crop: r } = crop.work;
   crop.img = null; // the reader owns it now
   crop.photo = null;
   $('crop').hidden = true;
@@ -2692,7 +2731,7 @@ async function readCrop() {
   const screen = $('crop-canvas');
   screen.width = 0;
   screen.height = 0;
-  const photo = newPhoto(old.file, { crop: r, rotation, fine, sample: old.sample });
+  const photo = newPhoto(old.file, { crop: r, rotation, fine, manual, sample: old.sample });
   const parsed = await read(async () => {
     const out = cropCanvas(img, r, rotation, fine);
     if (typeof img.close === 'function') img.close();
@@ -2799,6 +2838,8 @@ $('crop-rotate').addEventListener('click', rotateCrop);
 $('crop-angle').addEventListener('input', (e) => setFine(e.target.value));
 $('crop-angle-down').addEventListener('click', () => setFine(crop.work.fine - 0.5));
 $('crop-angle-up').addEventListener('click', () => setFine(crop.work.fine + 0.5));
+$('crop-mode-auto').addEventListener('change', () => setMode(false));
+$('crop-mode-manual').addEventListener('change', () => setMode(true));
 $('crop-read').addEventListener('click', readCrop);
 $('crop-stage').addEventListener('pointerdown', onCropPointerDown);
 $('crop-stage').addEventListener('pointermove', onCropPointerMove);
