@@ -5,6 +5,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.0] - 2026-11-15
+
+### Added
+
+- **Total check** at the top of step 4. It adds up what the receipt itself printed (items, tax, fees, gratuity and discounts, plus a tip if the receipt printed one) and compares that with the receipt's total. Green when they match, red with the difference when they don't. A missing tax line now shows up right away, instead of quietly making everyone underpay. The tip you choose in step 4 isn't on the receipt, so it never counts.
+- Until the bill matches the receipt's total, **The split** holds the shares back, the same way it does for an unclaimed item. The line says whether the subtotal matches, so you know where to look, and selecting it jumps to the check. A total the reader got wrong can be fixed with **Edit** in step 3.
+- Under a red total line, a deliberately quiet link adds the difference as a fee (or takes it off as a discount). It asks first, with **Cancel** as the default, and the row it adds is called **Receipt difference**.
+- **Gratuity** has its own list in step 4, between fees and discounts. A gratuity or service charge printed on the receipt lands there with its printed name ("Gratuity 18%"), split proportionally unless you pick **Equal**. **Add a gratuity** covers one the reader missed. Shares list it as "Gratuity", or "Fees and gratuity" when there are both.
+
+### Changed
+
+- With a gratuity on the bill, the tip starts at 0%, and a note above the tip says the gratuity is already included and any tip is extra. With two or more payers, card tips nobody has filled in start at 0% too, and the cards' tip line says what came on top of the gratuity. Restaurants that sneak in an 18% gratuity no longer get tipped twice.
+- A tip printed on a card slip still fills in the tip, since someone already chose it, and counts toward the total check.
+- The end-of-page lines say "Select to jump to it" instead of "Tap", since the site works with a mouse too.
+
 ## [2.7.1] - 2026-11-15
 
 ### Changed

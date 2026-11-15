@@ -12,7 +12,7 @@ const state = {
   items: [], // see makeItem()
   tipMode: 'percent',
   receipt: { subtotalCents: null, totalCents: null },
-  gratuityFromReceipt: false,
+  receiptTip: 0, // a tip printed on the receipt (card slips): part of the receipt's total, not a gratuity
   discounts: [], // { id, name, raw } rows in the Discounts list (whole-bill discounts, shared by order)
   photos: [], // see newPhoto(); memory only
   found: null, // the receipt's own figures as read from the photos: { sub, tax, fee, tip, gratuity, total }
@@ -25,6 +25,7 @@ const state = {
   keyboardUser: false,
   taxes: [], // { id, name, raw, inSubtotal } rows in the Tax list (raw = text in the amount box)
   fees: [], // { id, name, raw, even, inSubtotal } rows in the Fees list
+  gratuities: [], // { id, name, raw, even } gratuities the restaurant added, shared like fees
   tipEven: false,
   receiptShown: false,
   editing: null, // 'subtotalCents' | 'totalCents' while that receipt figure is being edited
@@ -189,11 +190,12 @@ function snapshot() {
     items: state.items.map(cloneItem),
     taxes: state.taxes.map((r) => ({ ...r })),
     fees: state.fees.map((r) => ({ ...r })),
+    gratuities: state.gratuities.map((r) => ({ ...r })),
     receipt: { ...state.receipt },
     tipEven: state.tipEven,
     tipMode: state.tipMode,
     tip: { pct: $('tip-pct').value, amt: $('tip-amt').value, total: $('tip-total').value },
-    gratuity: state.gratuityFromReceipt,
+    receiptTip: state.receiptTip,
     discounts: state.discounts.map((r) => ({ ...r })),
     photos: [...state.photos],
     found: state.found ? { ...state.found } : null,
@@ -267,13 +269,14 @@ function undo({ fromButton = false } = {}) {
   state.items = snap.items;
   state.taxes = snap.taxes;
   state.fees = snap.fees;
+  state.gratuities = snap.gratuities;
   state.receipt = snap.receipt;
   state.tipEven = snap.tipEven;
   state.discounts = snap.discounts;
   state.photos = snap.photos;
   state.found = snap.found;
   state.note = snap.note;
-  state.gratuityFromReceipt = snap.gratuity;
+  state.receiptTip = snap.receiptTip;
   state.editing = null;
   $('tip-pct').value = snap.tip.pct;
   $('tip-amt').value = snap.tip.amt;
@@ -297,7 +300,8 @@ function undo({ fromButton = false } = {}) {
 /* ------------------------------------------------------------------ people */
 
 function payEntry(pid) {
-  if (!state.pay.has(pid)) state.pay.set(pid, { paid: '', mode: 'percent', pct: '20', amt: '', total: '' });
+  // With a gratuity already on the bill, each card's own tip starts at 0, like the single tip.
+  if (!state.pay.has(pid)) state.pay.set(pid, { paid: '', mode: 'percent', pct: (readGrat() ?? 0) > 0 ? '0' : '20', amt: '', total: '' });
   return state.pay.get(pid);
 }
 
@@ -623,7 +627,7 @@ function chipsFor(item, rerender) {
       return el('span', { class: 'chip has-steps' },
         el('button', {
           type: 'button', class: 'chip-name', 'aria-pressed': 'true', text: p.name, 'data-key': `chip:${item.id}:${p.id}`,
-          'aria-label': `${p.name}, ${n} share${n === 1 ? '' : 's'}. Tap to remove.`,
+          'aria-label': `${p.name}, ${n} share${n === 1 ? '' : 's'}. Select to remove.`,
           onclick: () => { setShares(item, p.id, 0); rerender(); },
         }),
         el('button', {
@@ -931,6 +935,83 @@ function takeOffDifference(cents) {
   $('items-check').focus();
 }
 
+/*
+ * Total check (top of step 4): what the receipt itself printed should add up to its total.
+ * Items, tax, fees, gratuity and discounts, plus a tip printed on the receipt (card slips).
+ * The tip chosen in step 4 isn't on the receipt, so it never counts.
+ */
+function totalGap() {
+  const { totalCents } = state.receipt;
+  if (totalCents === null || !realItems().length) return null;
+  const tax = readTax();
+  const fee = readFee();
+  const disc = readDisc();
+  if (tax === null || fee === null || disc === null) return null;
+  const bill = billBeforeTip(tax, fee, disc) + (state.receiptTip || 0);
+  return { bill, diff: totalCents - bill, total: totalCents };
+}
+
+/** Does the subtotal check pass? true, false, or null when the receipt has no subtotal. */
+function subtotalMatches() {
+  const { subtotalCents } = state.receipt;
+  if (subtotalCents === null) return null;
+  const gap = subtotalCents - checkSum();
+  return gap === 0 || (gap < 0 && state.discounts.some((r) => r.name === DIFF_NAME && chargeCents(r) === -gap));
+}
+
+function renderTotalCheck() {
+  const out = $('total-check');
+  const fix = $('total-fix');
+  const t = totalGap();
+  if (!t) { out.hidden = true; fix.hidden = true; return; }
+  const tip = state.receiptTip ? ` with the receipt's ${formatMoney(state.receiptTip)} tip` : '';
+  out.hidden = false;
+  if (t.diff === 0) {
+    out.className = 'check ok';
+    out.textContent = `Bill adds up to ${formatMoney(t.bill)}${tip}, matching the receipt's total.`;
+    fix.hidden = true;
+    return;
+  }
+  const gap = Math.abs(t.diff);
+  out.className = 'check warn';
+  out.textContent = `Bill adds up to ${formatMoney(t.bill)}${tip}, ${formatMoney(gap)} ${t.diff > 0 ? 'less' : 'more'} than the receipt's total of ${formatMoney(t.total)}.`;
+  fix.hidden = false;
+  fix.textContent = t.diff > 0 ? `Add the ${formatMoney(gap)} difference as a fee` : `Take the ${formatMoney(gap)} difference off as a discount`;
+}
+
+/** The quiet fix under the total check, after a confirmation (Cancel is the default). */
+async function fixTotalDifference() {
+  const t = totalGap();
+  if (!t || t.diff === 0) return;
+  const gap = Math.abs(t.diff);
+  const asFee = t.diff > 0;
+  const ok = await confirmDialog({
+    title: asFee ? `Add a ${formatMoney(gap)} fee?` : `Take ${formatMoney(gap)} off as a discount?`,
+    body: 'Check the tax, fees and gratuity against the photo before you do.',
+    action: asFee ? 'Add fee' : 'Take it off',
+  });
+  if (!ok) { $('total-fix').focus(); return; }
+  if (asFee) {
+    remember(`Added the ${formatMoney(gap)} receipt difference as a fee`);
+    state.fees.push({ id: newId(), name: DIFF_NAME, raw: centsToInput(gap), even: false, inSubtotal: false });
+  } else {
+    remember(`Took the ${formatMoney(gap)} receipt difference off as a discount`);
+    state.discounts.push({ id: newId(), name: DIFF_NAME, raw: centsToInput(gap) });
+  }
+  renderCharges();
+  renderCheck();
+  renderPayerCalcs();
+  renderResults();
+  $('total-check').focus();
+}
+
+/** From the end line: bring the total check into view. */
+function jumpToTotal() {
+  const out = $('total-check');
+  out.scrollIntoView({ block: 'center', behavior: reducedMotion() ? 'auto' : 'smooth' });
+  out.focus({ preventScroll: true });
+}
+
 function addMissing(cents) {
   if (state.items.length >= LIMITS.items) return;
   const tops = topItems();
@@ -989,6 +1070,7 @@ const KIND = {
   tax: { list: 'taxes', label: 'Tax', name: 'Tax name', a: 'a tax line', what: 'tax amount' },
   fee: { list: 'fees', label: 'Fee', name: 'Fee name', a: 'a fee', what: 'fee amount' },
   disc: { list: 'discounts', label: 'Discount', name: 'Discount name', a: 'a discount', what: 'discount' },
+  grat: { list: 'gratuities', label: 'Gratuity', name: 'Gratuity name', a: 'a gratuity', what: 'gratuity' },
 };
 const chargeList = (kind) => state[KIND[kind].list];
 const chargeLabel = (row, kind) => row.name || KIND[kind].label;
@@ -1013,8 +1095,15 @@ function sumCharges(rows, pick = () => true) {
 }
 
 const readTax = () => sumCharges(state.taxes);
-const readFee = () => sumCharges(state.fees);
-const readFeeEven = () => sumCharges(state.fees, (r) => r.even);
+const readGrat = () => sumCharges(state.gratuities);
+/** Fees and gratuities: in the bill's math a gratuity is shared the same way a fee is. */
+const readFee = () => { const f = sumCharges(state.fees); const g = readGrat(); return f === null || g === null ? null : f + g; };
+const readFeeEven = () => (sumCharges(state.fees, (r) => r.even) ?? 0) + (sumCharges(state.gratuities, (r) => r.even) ?? 0);
+/** How the fee line in each share is labeled. */
+const feeLabel = () => {
+  const f = state.fees.some((r) => chargeCents(r)); const g = state.gratuities.some((r) => chargeCents(r));
+  return f && g ? 'Fees and gratuity' : g ? 'Gratuity' : 'Fees';
+};
 /** Fees and tax printed above the subtotal, so the subtotal already includes them. */
 const chargesInSubtotal = () =>
   (sumCharges(state.taxes, (r) => r.inSubtotal) ?? 0) + (sumCharges(state.fees, (r) => r.inSubtotal) ?? 0);
@@ -1025,7 +1114,7 @@ function refocus(selector) {
 }
 
 function chargeRow(row, kind) {
-  const isFee = kind === 'fee';
+  const isFee = kind === 'fee' || kind === 'grat';
   const label = chargeLabel(row, kind);
   const nameInput = el('input', {
     type: 'text', class: 'charge-name', maxlength: '40', autocomplete: 'off', value: row.name,
@@ -1044,6 +1133,7 @@ function chargeRow(row, kind) {
     row.raw = amount.value.slice(0, 12);
     renderChargeSums();
     renderCheck();
+    renderTipNote();
     renderPayerCalcs();
     renderResults();
   });
@@ -1085,6 +1175,8 @@ function renderChargeSums() {
   const f = readFee();
   $('tax-sum').textContent = state.taxes.length > 1 && t !== null ? `Total tax ${formatMoney(t)}` : '';
   $('fee-sum').textContent = state.fees.length > 1 && f !== null ? `Total fees ${formatMoney(f)}` : '';
+  const g = readGrat();
+  $('grat-sum').textContent = state.gratuities.length > 1 && g !== null ? `Total gratuity ${formatMoney(g)}` : '';
   const d = readDisc();
   $('disc-sum').textContent = state.discounts.length > 1 && d !== null ? `Total discounts ${formatMoney(d)}` : '';
 }
@@ -1097,6 +1189,10 @@ function drawCharges() {
   const hasFees = state.fees.length > 0;
   $('fee-block').hidden = !hasFees;
   $('fee-show').hidden = hasFees;
+  $('grat-list').replaceChildren(...state.gratuities.map((r) => chargeRow(r, 'grat')));
+  const hasGrat = state.gratuities.length > 0;
+  $('grat-block').hidden = !hasGrat;
+  $('grat-show').hidden = hasGrat;
   $('disc-list').replaceChildren(...state.discounts.map((r) => chargeRow(r, 'disc')));
   const hasDisc = state.discounts.length > 0;
   $('disc-block').hidden = !hasDisc;
@@ -1108,8 +1204,11 @@ function addCharge(kind) {
   const list = chargeList(kind);
   if (list.length >= 20) return;
   const row = kind === 'fee' ? { id: newId(), name: '', raw: '', even: false, inSubtotal: false }
-    : kind === 'disc' ? { id: newId(), name: '', raw: '' }
-      : { ...blankTax(), name: '' };
+    : kind === 'grat' ? { id: newId(), name: '', raw: '', even: false }
+      : kind === 'disc' ? { id: newId(), name: '', raw: '' }
+        : { ...blankTax(), name: '' };
+  // The first gratuity on the bill: the tip starts at 0, since one is already included.
+  if (kind === 'grat' && !list.length) zeroTip();
   list.push(row);
   renderCharges();
   refocus(`[data-charge="${row.id}"] .charge-name`);
@@ -1123,12 +1222,14 @@ function removeCharge(row, kind) {
   state[KIND[kind].list] = list.filter((r) => r !== row);
   renderCharges();
   renderCheck();
+  renderTipNote();
   renderPayerCalcs();
   renderResults();
   const field = next && document.querySelector(`[data-charge="${next.id}"] .charge-name`);
   if (field) field.focus();
   else if (kind === 'fee') $('fee-show').focus();
   else if (kind === 'disc') $('disc-show').focus();
+  else if (kind === 'grat') $('grat-show').focus();
   else refocus('#tax-list .charge-name');
 }
 
@@ -1299,15 +1400,13 @@ function readCardsTip(tax, fee, disc) {
     else paidSum += r.paid;
   }
   const sum = [...cards.values()].reduce((a, b) => a + b, 0);
-  const before = billBeforeTip(tax, fee, disc);
-  const gratuity = state.gratuityFromReceipt ? readMoneyField('tip-amt') ?? 0 : 0;
-  const bill = before + gratuity;
+  const bill = billBeforeTip(tax, fee, disc); // includes any gratuity, so the cards' tip is only what's on top
   // Tips go on top of the bill, so the amounts paid before tip have to cover it.
   if (!anyTotal && paidSum < bill) {
     return { error: `The payments add up to ${formatMoney(paidSum)}, ${formatMoney(bill - paidSum)} less than the bill before tip (${formatMoney(bill)}).`, short: true, cards };
   }
   if (sum < bill) return { error: `The cards cover ${formatMoney(bill - sum)} less than the bill.`, short: true, cards };
-  return { cents: sum - before, cards, gratuity };
+  return { cents: sum - bill, cards };
 }
 
 function syncTipPresets() {
@@ -1329,9 +1428,20 @@ function setTipMode(mode) {
 
 function renderTipNote() {
   const note = $('tip-note');
-  const show = state.gratuityFromReceipt && state.tipMode === 'amount' && !multiPay();
+  const g = readGrat() ?? 0;
+  const show = g > 0 && !multiPay();
   note.hidden = !show;
-  note.textContent = show ? 'This receipt already includes a gratuity. It’s filled in as the tip, so don’t add another.' : '';
+  note.textContent = show ? `This bill already includes a ${formatMoney(g)} gratuity, listed above. Any tip here is extra.` : '';
+}
+
+/** Tip at 0 percent (a gratuity is already on the bill). Card tips nobody has touched go to 0 too. */
+function zeroTip() {
+  for (const p of state.pay.values()) if (p.mode === 'percent' && p.pct === '20' && !p.paid.trim()) p.pct = '0';
+  $('tip-pct').value = '0';
+  $('tip-amt').value = '';
+  $('tip-total').value = '';
+  setTipMode('percent');
+  syncTipPresets();
 }
 
 /* ----------------------------------------------------------------- payers */
@@ -1443,9 +1553,9 @@ function gather() {
   if (!realItems().length) return { block: { text: 'Add the items from the receipt.' } };
 
   const noPrice = state.items.find((i) => i.cents === null && !isBlank(i));
-  if (noPrice) return { block: { text: `${cap(itemLabel(noPrice))} needs a price. Tap to jump to it.`, id: noPrice.id } };
+  if (noPrice) return { block: { text: `${cap(itemLabel(noPrice))} needs a price. Select to jump to it.`, id: noPrice.id } };
   const guess = state.items.find((i) => i.guess);
-  if (guess) return { block: { text: `Confirm the guessed price for ${itemLabel(guess)}. Tap to jump to it.`, id: guess.id } };
+  if (guess) return { block: { text: `Confirm the guessed price for ${itemLabel(guess)}. Select to jump to it.`, id: guess.id } };
 
   const tax = readTax();
   const fee = readFee();
@@ -1471,7 +1581,13 @@ function gather() {
   if (open.length) {
     const names = open.slice(0, 3).map(itemLabel).join(', ');
     const more = open.length > 3 ? ` and ${open.length - 3} more` : '';
-    return { block: { text: `Still unclaimed: ${names}${more}. Tap to jump to ${open.length === 1 ? 'it' : 'the first one'}.`, id: open[0].id } };
+    return { block: { text: `Still unclaimed: ${names}${more}. Select to jump to ${open.length === 1 ? 'it' : 'the first one'}.`, id: open[0].id } };
+  }
+  const t = totalGap();
+  if (t && t.diff !== 0) {
+    const sub = subtotalMatches();
+    const subText = sub === true ? ' The subtotal matches.' : sub === false ? ' The subtotal doesn’t match either.' : '';
+    return { block: { text: `The bill is ${formatMoney(Math.abs(t.diff))} ${t.diff > 0 ? 'less' : 'more'} than the receipt’s total.${subText} Select to jump to it.`, go: jumpToTotal } };
   }
   return { tax, fee, disc, tip, cards };
 }
@@ -1524,7 +1640,7 @@ function slipText(row, result, owes) {
   out.push(`Food & drink: ${formatMoney(row.subtotal)}`);
   if (row.discount) out.push(`Discount: ${formatMoney(row.discount)}`);
   out.push(`Tax: ${formatMoney(row.tax)}`);
-  if (result.feeCents) out.push(`Fees: ${formatMoney(row.fee)}`);
+  if (result.feeCents) out.push(`${feeLabel()}: ${formatMoney(row.fee)}`);
   out.push(`Tip: ${formatMoney(row.tip)}`);
   out.push(`Total: ${formatMoney(row.total)}`);
   const o = owes(row);
@@ -1595,8 +1711,9 @@ function renderCardsLine() {
     check.textContent = r.short ? r.error : '';
     return;
   }
-  const grat = r.gratuity ? `, including the receipt's ${formatMoney(r.gratuity)} gratuity` : '';
   const pct = pctOfFood(r.cents);
+  const g = readGrat() ?? 0;
+  const grat = g ? `, on top of the ${formatMoney(g)} gratuity` : '';
   tipOut.textContent = `Tip from the cards: ${formatMoney(r.cents)}${grat}${pct ? ` (about ${pct})` : ''}`;
   check.className = 'check ok';
   check.textContent = 'The cards cover the whole bill.';
@@ -1615,6 +1732,7 @@ function renderResults() {
   const disc = readDisc();
   for (const check of staticChecks) check(); // values can change without typing (presets, Undo, a new receipt)
   renderTotalCalc();
+  renderTotalCheck();
   renderCardsLine();
 
   const g = gather();
@@ -1624,7 +1742,9 @@ function renderResults() {
   state.wasDone = !g.block;
   if (g.block) {
     blockedEl.replaceChildren(
-      g.block.id ? el('button', { type: 'button', class: 'blocked-link', text: g.block.text, onclick: () => jumpTo(g.block.id) }) : g.block.text
+      g.block.id || g.block.go
+        ? el('button', { type: 'button', class: 'blocked-link', text: g.block.text, onclick: () => (g.block.go ? g.block.go() : jumpTo(g.block.id)) })
+        : g.block.text
     );
     $('summary').replaceChildren();
     $('slips').replaceChildren();
@@ -1677,7 +1797,7 @@ function renderResults() {
           sum('Food & drink', row.subtotal),
           row.discount ? sum('Discount', row.discount) : null,
           sum('Tax', row.tax),
-          result.feeCents ? sum('Fees', row.fee) : null,
+          result.feeCents ? sum(feeLabel(), row.fee) : null,
           sum('Tip', row.tip)),
         el('div', { class: 'slip-total' }, el('span', { text: 'Total' }), el('span', { text: formatMoney(row.total) })),
         o ? el('p', { class: 'slip-owes', text: o }) : null),
@@ -2347,7 +2467,7 @@ async function read(getSource, { darker = false, photo = null } = {}) {
 function resetTip() {
   $('tip-amt').value = '';
   $('tip-total').value = '';
-  state.gratuityFromReceipt = false;
+  state.receiptTip = 0;
   setTipMode('percent');
 }
 
@@ -2427,6 +2547,7 @@ function applyParsed(parsed, { mode = 'replace', photo = null, replaces = null }
     state.taxes = taxes;
     state.fees = fees;
     state.discounts = [];
+    state.gratuities = [];
     resetTip();
     if (photo) state.found = figs;
   } else {
@@ -2442,10 +2563,19 @@ function applyParsed(parsed, { mode = 'replace', photo = null, replaces = null }
     }
   }
   state.tipEven = state.fees.some((f) => f.even); // a delivery order: the driver's tip splits evenly
-  if (figs.tip !== null && figs.tip > 0 && (mode === 'replace' || !$('tip-amt').value.trim())) {
-    $('tip-amt').value = centsToInput(figs.tip);
-    state.gratuityFromReceipt = figs.gratuity;
-    setTipMode('amount');
+  if (figs.tip !== null && figs.tip > 0) {
+    if (figs.gratuity) {
+      // A gratuity the restaurant added is its own row, not the tip. The tip starts at 0.
+      if (mode === 'replace' || mode === 'redo' || !state.gratuities.length) {
+        state.gratuities = [{ id: newId(), name: parsed.tipName || 'Gratuity', raw: centsToInput(figs.tip), even: false }];
+        zeroTip();
+      }
+    } else if (mode === 'replace' || !$('tip-amt').value.trim()) {
+      // A tip printed on the receipt (a card slip): someone already chose it.
+      $('tip-amt').value = centsToInput(figs.tip);
+      state.receiptTip = figs.tip;
+      setTipMode('amount');
+    }
   }
   guessMissingPrice();
 
@@ -2799,6 +2929,8 @@ async function resetAll() {
   state.discounts = [];
   state.taxes = [];
   state.fees = [];
+  state.gratuities = [];
+  state.receiptTip = 0;
   state.tipEven = false;
   state.editing = null;
   for (const id of ['tip-amt', 'tip-total', 'person-name', 'copy-fallback-text']) $(id).value = '';
@@ -2875,14 +3007,13 @@ document.querySelectorAll('#tip-split .chip').forEach((b) => {
 $('scan-again').addEventListener('click', scanAgain);
 $('receipt-toggle').addEventListener('click', () => { state.receiptShown = !state.receiptShown; renderReceiptView(); });
 $('disc-show').addEventListener('click', () => addCharge('disc'));
+$('grat-show').addEventListener('click', () => addCharge('grat'));
+$('grat-add').addEventListener('click', () => addCharge('grat'));
+$('total-fix').addEventListener('click', fixTotalDifference);
 $('disc-add').addEventListener('click', () => addCharge('disc'));
 $('choose-cancel').addEventListener('click', () => $('choose').close());
 $('choose').addEventListener('click', (e) => { if (e.target === $('choose')) $('choose').close(); });
-$('tip-amt').addEventListener('input', () => {
-  // A tip typed by hand is no longer the receipt's gratuity.
-  if (state.gratuityFromReceipt) { state.gratuityFromReceipt = false; renderTipNote(); }
-  renderResults();
-});
+$('tip-amt').addEventListener('input', () => renderResults());
 $('tip-pct').addEventListener('input', () => { syncTipPresets(); renderResults(); });
 document.querySelectorAll('#tip-presets .chip').forEach((b) => {
   b.addEventListener('click', () => {

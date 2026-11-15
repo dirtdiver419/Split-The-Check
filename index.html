@@ -102,6 +102,10 @@
 
     <section class="sheet" aria-labelledby="h-extras">
       <h2 id="h-extras"><span class="step">4</span> Tax and tip</h2>
+      <div class="total-check-wrap">
+        <p id="total-check" class="check" tabindex="-1" hidden></p>
+        <button id="total-fix" class="total-fix" type="button" hidden></button>
+      </div>
       <div class="field">
         <p class="field-label" id="tax-label">Tax</p>
         <ul id="tax-list" class="charge-list" aria-labelledby="tax-label"></ul>
@@ -122,6 +126,17 @@
       </div>
       <button id="fee-show" class="linkish fee-show" type="button">Add a fee or surcharge</button>
 
+      <div class="field" id="grat-block" hidden>
+        <p class="field-label" id="grat-label">Gratuity</p>
+        <p class="note grat-note">Added by the restaurant, as printed on the receipt.</p>
+        <ul id="grat-list" class="charge-list" aria-labelledby="grat-label"></ul>
+        <div class="charge-foot">
+          <button id="grat-add" class="linkish" type="button">+ Add a gratuity</button>
+          <span id="grat-sum" class="charge-sum"></span>
+        </div>
+      </div>
+      <button id="grat-show" class="linkish fee-show" type="button">Add a gratuity</button>
+
       <div class="field" id="disc-block" hidden>
         <p class="field-label" id="disc-label">Discounts</p>
         <ul id="disc-list" class="charge-list" aria-labelledby="disc-label"></ul>
@@ -135,6 +150,7 @@
 
       <fieldset class="field" id="tip-single">
         <legend>Tip</legend>
+        <p id="tip-note" class="tip-note" hidden></p>
         <div class="seg" role="radiogroup" aria-label="Tip type">
           <label><input type="radio" name="tip-mode" value="percent" checked> Percent</label>
           <label><input type="radio" name="tip-mode" value="amount"> Amount</label>
@@ -161,7 +177,6 @@
           <p id="tip-total-calc" class="computed" aria-live="polite"></p>
           <p class="note">Type the total you want to pay, tip included.</p>
         </div>
-        <p id="tip-note" class="tip-note" hidden></p>
       </fieldset>
 
       <div id="payers" hidden>
@@ -208,7 +223,7 @@
     <p>Nothing on this page is stored. Close or refresh it and everything's gone.</p>
     <p class="disclaimer">Not financial advice. The receipt reader can make mistakes, so check the items, prices and totals against the actual receipt before anyone pays.</p>
     <p><a class="guide-link" href="guide.html">How to use it</a></p>
-    <p class="version">Version 2.7.1</p>
+    <p class="version">Version 2.8.0</p>
   </footer>
 
   <div id="undo-bar" class="undo-bar" role="status" aria-live="polite" hidden>

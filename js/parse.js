@@ -138,6 +138,14 @@ function chargeName(raw, fallback) {
   return name ? fixSpelling(name) : fallback;
 }
 
+/** A gratuity keeps its printed percent ("Gratuity 18%"), so the row says what it was. */
+function gratuityName(raw) {
+  const pct = raw.match(/(\d+(?:\.\d+)?)\s*%/);
+  const name = cleanName(raw.replace(/\(?\s*\d+(\.\d+)?\s*%\s*\)?/g, ' '));
+  const base = name ? fixSpelling(name) : 'Gratuity';
+  return pct ? `${base} ${pct[1]}%` : base;
+}
+
 /** Split a line into label and price. Returns { label, cents } with cents null when there's no price. */
 function splitPrice(line) {
   let m = line.match(PRICE_AT_END);
@@ -298,7 +306,7 @@ function mergeWrappedPrices(lines) {
 export function parseLines(input) {
   const out = {
     items: [], taxCents: null, tipCents: null, feeCents: null,
-    subtotalCents: null, totalCents: null, gratuity: false, cardSlip: false, feeInSubtotal: 0,
+    subtotalCents: null, totalCents: null, gratuity: false, tipName: null, cardSlip: false, feeInSubtotal: 0,
     taxes: [], fees: [],
   };
   if (!Array.isArray(input)) return out;
@@ -371,7 +379,7 @@ export function parseLines(input) {
       if (RE.tip.test(key)) {
         out.tipCents = (out.tipCents ?? 0) + cents;
         tipLines += 1;
-        if (/gratuity|service|auto/.test(key)) out.gratuity = true;
+        if (/gratuity|service|auto/.test(key)) { out.gratuity = true; out.tipName = gratuityName(rawLabel); }
         continue;
       }
       if (RE.fee.test(key)) {
