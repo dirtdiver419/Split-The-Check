@@ -8,7 +8,7 @@ import { toGray, resampleGray, measureSkew } from './image.js';
 const state = {
   people: [], // { id, name }
   payerIds: new Set(),
-  pay: new Map(), // personId -> { paid, mode: 'percent'|'amount'|'total', pct, amt, total } (raw text)
+  pay: new Map(), // personId -> { paid, mode: 'percent'|'amount', pct, amt } (raw text)
   items: [], // see makeItem()
   tipMode: 'percent',
   receipt: { subtotalCents: null, totalCents: null },
@@ -300,9 +300,11 @@ function undo({ fromButton = false } = {}) {
 /* ------------------------------------------------------------------ people */
 
 function payEntry(pid) {
-  // With a gratuity already on the bill, each card's own tip starts at 0, like the single tip.
-  if (!state.pay.has(pid)) state.pay.set(pid, { paid: '', mode: 'percent', pct: (readGrat() ?? 0) > 0 ? '0' : '20', amt: '', total: '' });
-  return state.pay.get(pid);
+  // Every tip box starts blank: the site records the tip people left (or plan to), it doesn't suggest one.
+  if (!state.pay.has(pid)) state.pay.set(pid, { paid: '', mode: 'percent', pct: '', amt: '' });
+  const p = state.pay.get(pid);
+  if (p.mode !== 'amount') p.mode = 'percent'; // several payers have no card Total
+  return p;
 }
 
 function addPerson() {
@@ -1207,8 +1209,6 @@ function addCharge(kind) {
     : kind === 'grat' ? { id: newId(), name: '', raw: '', even: false }
       : kind === 'disc' ? { id: newId(), name: '', raw: '' }
         : { ...blankTax(), name: '' };
-  // The first gratuity on the bill: the tip starts at 0, since one is already included.
-  if (kind === 'grat' && !list.length) zeroTip();
   list.push(row);
   renderCharges();
   refocus(`[data-charge="${row.id}"] .charge-name`);
@@ -1343,20 +1343,23 @@ const pctOfFood = (tip) => {
 };
 
 /** Single-payer tip. Returns { cents } or { error }. */
+/** The single payer's tip. A blank box means no tip added: { cents: 0, none: true }. */
 function readSingleTip(tax, fee, disc) {
   if (state.tipMode === 'amount') {
+    if (!$('tip-amt').value.trim()) return { cents: 0, none: true };
     const c = readMoneyField('tip-amt');
     return c === null ? { error: 'The tip amount doesn’t look like a dollar amount.' } : { cents: c };
   }
   if (state.tipMode === 'total') {
     const raw = $('tip-total').value.trim();
-    if (!raw) return { error: 'Type the total you want to pay, tip included.' };
+    if (!raw) return { cents: 0, none: true };
     const total = parseMoney(raw);
     if (total === null || total < 0) return { error: 'The total doesn’t look like a dollar amount.' };
     const before = billBeforeTip(tax, fee, disc);
     if (total < before) return { error: `The total is ${formatMoney(before - total)} less than the bill before tip (${formatMoney(before)}).` };
     return { cents: total - before };
   }
+  if (!$('tip-pct').value.trim()) return { cents: 0, none: true };
   const pct = parsePercent($('tip-pct').value);
   if (pct === null) return { error: 'The tip percent should be a number from 0 to 100.' };
   return { cents: Math.round((orderedSum() * pct) / 100) };
@@ -1366,47 +1369,77 @@ function readSingleTip(tax, fee, disc) {
 function readCard(person) {
   const p = payEntry(person.id);
   const name = person.name;
-  if (p.mode === 'total') {
-    if (!p.total.trim()) return { error: `Enter ${name}'s card total.`, empty: true };
-    const card = parseMoney(p.total);
-    if (card === null || card < 0) return { error: `${name}'s card total doesn’t look like a dollar amount.` };
-    return { card, tip: null };
-  }
   if (!p.paid.trim()) return { error: `Enter what ${name} paid.`, empty: true };
   const paid = parseMoney(p.paid);
   if (paid === null || paid < 0) return { error: `What ${name} paid doesn’t look like a dollar amount.` };
   let tip = 0;
-  if (p.mode === 'percent') {
+  const none = !(p.mode === 'percent' ? p.pct : p.amt).trim(); // a blank tip box: no tip added
+  if (p.mode === 'percent' && !none) {
     const pct = parsePercent(p.pct);
     if (pct === null) return { error: `${name}'s tip percent should be a number from 0 to 100.` };
     tip = Math.round((paid * pct) / 100);
-  } else if (p.amt.trim()) {
+  } else if (!none) {
     tip = parseMoney(p.amt);
     if (tip === null || tip < 0) return { error: `${name}'s tip doesn’t look like a dollar amount.` };
   }
-  return { card: paid + tip, tip, paid };
+  return { card: paid + tip, tip, paid, none };
 }
 
 /** Multi-payer tip from the cards. Returns { cents, cards: Map } or { error, id? }. */
 function readCardsTip(tax, fee, disc) {
   const cards = new Map();
+  const noTip = [];
   let paidSum = 0;
-  let anyTotal = false;
   for (const person of payers()) {
     const r = readCard(person);
     if (r.error) return { error: r.error };
     cards.set(person.id, r.card);
-    if (r.tip === null) anyTotal = true;
-    else paidSum += r.paid;
+    paidSum += r.paid;
+    if (r.none) noTip.push(person.name);
   }
   const sum = [...cards.values()].reduce((a, b) => a + b, 0);
   const bill = billBeforeTip(tax, fee, disc); // includes any gratuity, so the cards' tip is only what's on top
   // Tips go on top of the bill, so the amounts paid before tip have to cover it.
-  if (!anyTotal && paidSum < bill) {
-    return { error: `The payments add up to ${formatMoney(paidSum)}, ${formatMoney(bill - paidSum)} less than the bill before tip (${formatMoney(bill)}).`, short: true, cards };
+  if (paidSum < bill) {
+    return { error: `The payments add up to ${formatMoney(paidSum)}, ${formatMoney(bill - paidSum)} less than the bill before tips (${formatMoney(bill)}).`, short: true, cards };
   }
-  if (sum < bill) return { error: `The cards cover ${formatMoney(bill - sum)} less than the bill.`, short: true, cards };
-  return { cents: sum - bill, cards };
+  return { cents: sum - bill, cards, noTip };
+}
+
+/** What the payers have entered so far against the bill before tips: { paid, bill, valid }. */
+function paidSoFar() {
+  let paid = 0;
+  let valid = true;
+  for (const person of payers()) {
+    const raw = payEntry(person.id).paid.trim();
+    if (!raw) continue;
+    const c = parseMoney(raw);
+    if (c === null || c < 0) { valid = false; continue; }
+    paid += c;
+  }
+  return { paid, valid, bill: billBeforeTip(readTax() ?? 0, readFee() ?? 0, readDisc() ?? 0) };
+}
+
+/** The one payer still blank when everyone else has filled in what they paid, or null. */
+function restPayer() {
+  const list = payers();
+  const blank = list.filter((person) => !payEntry(person.id).paid.trim());
+  if (blank.length !== 1 || list.length < 2) return null;
+  const others = list.filter((person) => person !== blank[0]);
+  if (others.some((person) => { const c = parseMoney(payEntry(person.id).paid); return c === null || c < 0; })) return null;
+  return blank[0];
+}
+
+/** Fill in the rest: types the remainder into the last payer's Paid box once. */
+function fillRest(person) {
+  const { paid, bill } = paidSoFar();
+  const rest = bill - paid;
+  if (rest <= 0) return;
+  payEntry(person.id).paid = centsToInput(rest);
+  renderPayers();
+  renderResults();
+  const box = document.querySelector(`[data-paid="${person.id}"]`);
+  if (box) box.focus();
 }
 
 function syncTipPresets() {
@@ -1434,23 +1467,13 @@ function renderTipNote() {
   note.textContent = show ? `This bill already includes a ${formatMoney(g)} gratuity, listed above. Any tip here is extra.` : '';
 }
 
-/** Tip at 0 percent (a gratuity is already on the bill). Card tips nobody has touched go to 0 too. */
-function zeroTip() {
-  for (const p of state.pay.values()) if (p.mode === 'percent' && p.pct === '20' && !p.paid.trim()) p.pct = '0';
-  $('tip-pct').value = '0';
-  $('tip-amt').value = '';
-  $('tip-total').value = '';
-  setTipMode('percent');
-  syncTipPresets();
-}
-
 /* ----------------------------------------------------------------- payers */
 
 function payerTipField(person, p) {
   const rerender = () => { renderPayers(); renderResults(); };
   const segName = `pay-mode-${person.id}`;
   const seg = el('div', { class: 'seg small', role: 'radiogroup', 'aria-label': `${person.name}'s tip type` },
-    ...[['percent', 'Percent'], ['amount', 'Amount'], ['total', 'Total']].map(([v, label]) => {
+    ...[['percent', 'Percent'], ['amount', 'Amount']].map(([v, label]) => {
       const input = el('input', { type: 'radio', name: segName, value: v, checked: p.mode === v });
       input.addEventListener('change', () => { p.mode = v; rerender(); });
       return el('label', {}, input, ` ${label}`);
@@ -1460,7 +1483,6 @@ function payerTipField(person, p) {
   const name = person.name;
   const messages = {
     paid: `What ${name} paid doesn’t look like a dollar amount.`,
-    total: `${name}'s card total doesn’t look like a dollar amount.`,
     amt: `${name}'s tip doesn’t look like a dollar amount.`,
   };
   /** Returns [the box, its error line]. */
@@ -1491,10 +1513,8 @@ function payerTipField(person, p) {
       renderResults();
     });
     detail.append(presets, el('div', { class: 'money pct' }, pctInput, el('span', { 'aria-hidden': 'true', text: '%' })), pctErr);
-  } else if (p.mode === 'amount') {
-    detail.append(...moneyInput('amt', `${person.name}'s tip`));
   } else {
-    detail.append(...moneyInput('total', `${person.name}'s card total, tip included`));
+    detail.append(...moneyInput('amt', `${person.name}'s tip`));
   }
   detail.append(el('p', { class: 'payer-calc', 'data-calc': person.id, 'aria-live': 'polite' }));
   return { seg, detail, moneyInput };
@@ -1510,11 +1530,15 @@ function renderPayers() {
   $('payer-blocks').replaceChildren(...payers().map((person) => {
     const p = payEntry(person.id);
     const { seg, detail, moneyInput } = payerTipField(person, p);
-    const [paidBox, paidErr] = p.mode === 'total' ? [null, null] : moneyInput('paid', `What ${person.name} paid, before tip`);
-    if (paidErr) paidErr.classList.add('payer-err');
+    const [paidBox, paidErr] = moneyInput('paid', `What ${person.name} paid, before tip`);
+    paidBox.querySelector('input').dataset.paid = person.id;
+    paidErr.classList.add('payer-err');
+    // Shown only on the last blank payer once everyone else has filled in (see renderPayerCalcs).
+    const rest = el('button', { type: 'button', class: 'linkish fill-rest', 'data-rest': person.id, hidden: true, text: 'Fill in the rest', onclick: () => fillRest(person) });
     return el('div', { class: 'payer-block' },
       el('h3', { text: person.name }),
-      paidBox ? el('div', { class: 'payer-row' }, el('span', { text: 'Paid' }), paidBox) : null,
+      rest,
+      el('div', { class: 'payer-row' }, el('span', { text: 'Paid' }), paidBox),
       paidErr,
       el('div', { class: 'payer-row' }, el('span', { text: 'Tip' }), seg),
       detail);
@@ -1524,12 +1548,19 @@ function renderPayers() {
 
 function renderPayerCalcs() {
   if (!multiPay()) return;
+  const restFor = restPayer();
+  const left = restFor ? paidSoFar().bill - paidSoFar().paid : 0;
   for (const person of payers()) {
+    const link = document.querySelector(`[data-rest="${person.id}"]`);
+    if (link) {
+      link.hidden = person !== restFor;
+      link.disabled = person === restFor && left <= 0; // nothing left to fill: grayed out
+    }
     const out = document.querySelector(`[data-calc="${person.id}"]`);
     if (!out) continue;
     const r = readCard(person);
     if (r.error) { out.textContent = ''; continue; } // the box itself shows what's wrong
-    out.textContent = r.tip === null ? `Card total ${formatMoney(r.card)}` : `Tip ${formatMoney(r.tip)} · card total ${formatMoney(r.card)}`;
+    out.textContent = r.none ? '' : `Tip ${formatMoney(r.tip)} · card total ${formatMoney(r.card)}`;
   }
 }
 
@@ -1566,15 +1597,18 @@ function gather() {
 
   let tip;
   let cards = null;
+  let noTip = null; // who has a blank tip box: shown as "No tip added", it doesn't hold the split
   if (multiPay()) {
     const r = readCardsTip(tax, fee, disc);
     if (r.error) return { block: { text: r.error }, cardsShort: r.short };
     tip = r.cents;
     cards = r.cards;
+    noTip = r.noTip.length ? r.noTip : null;
   } else {
     const r = readSingleTip(tax, fee, disc);
     if (r.error) return { block: { text: r.error } };
     tip = r.cents;
+    noTip = r.none ? [] : null;
   }
 
   const open = topItems().filter((i) => !isBlank(i) && i.assigned.size === 0);
@@ -1589,7 +1623,12 @@ function gather() {
     const subText = sub === true ? ' The subtotal matches.' : sub === false ? ' The subtotal doesn’t match either.' : '';
     return { block: { text: `The bill is ${formatMoney(Math.abs(t.diff))} ${t.diff > 0 ? 'less' : 'more'} than the receipt’s total.${subText} Select to jump to it.`, go: jumpToTotal } };
   }
-  return { tax, fee, disc, tip, cards };
+  return { tax, fee, disc, tip, cards, noTip };
+}
+
+/** "Ana", "Ana and Ben", "Ana, Ben and Cy". */
+function listNames(names) {
+  return names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
 function lineLabel(l) {
@@ -1701,22 +1740,24 @@ function renderCardsLine() {
   const tipOut = $('cards-tip');
   const check = $('cards-check');
   if (!multiPay()) { tipOut.textContent = ''; check.textContent = ''; return; }
-  const tax = readTax() ?? 0;
-  const fee = readFee() ?? 0;
-  const disc = readDisc() ?? 0;
-  const r = readCardsTip(tax, fee, disc);
-  if (r.error) {
-    tipOut.textContent = '';
+  // Paid so far: muted while short (normal while typing), green when exact, red when over.
+  const s = paidSoFar();
+  if (!s.valid) { check.textContent = ''; } else if (s.paid < s.bill) {
+    check.className = 'check muted';
+    check.textContent = `Paid so far: ${formatMoney(s.paid)} of the ${formatMoney(s.bill)} bill before tips. ${formatMoney(s.bill - s.paid)} to go.`;
+  } else if (s.paid === s.bill) {
+    check.className = 'check ok';
+    check.textContent = `Paid so far: ${formatMoney(s.paid)} of ${formatMoney(s.bill)}, the whole bill.`;
+  } else {
     check.className = 'check warn';
-    check.textContent = r.short ? r.error : '';
-    return;
+    check.textContent = `Paid so far: ${formatMoney(s.paid)}, ${formatMoney(s.paid - s.bill)} more than the ${formatMoney(s.bill)} bill before tips.`;
   }
+  const r = readCardsTip(readTax() ?? 0, readFee() ?? 0, readDisc() ?? 0);
+  if (r.error || r.cents === 0) { tipOut.textContent = ''; return; }
   const pct = pctOfFood(r.cents);
   const g = readGrat() ?? 0;
   const grat = g ? `, on top of the ${formatMoney(g)} gratuity` : '';
   tipOut.textContent = `Tip from the cards: ${formatMoney(r.cents)}${grat}${pct ? ` (about ${pct})` : ''}`;
-  check.className = 'check ok';
-  check.textContent = 'The cards cover the whole bill.';
 }
 
 function renderTotalCalc() {
@@ -1752,7 +1793,8 @@ function renderResults() {
     $('copy-all').hidden = true;
     return;
   }
-  blockedEl.replaceChildren('Everything’s assigned.');
+  const names = g.noTip && g.noTip.length ? ` for ${listNames(g.noTip)}` : '';
+  blockedEl.replaceChildren('Everything’s assigned.', ...(g.noTip ? [el('span', { class: 'no-tip', text: ` No tip added${names}.` })] : []));
 
   const forSplit = realItems().map((i) => ({ ...i, name: qtyName(i) }));
   const feeEven = readFeeEven() ?? 0;
@@ -2465,6 +2507,7 @@ async function read(getSource, { darker = false, photo = null } = {}) {
 }
 
 function resetTip() {
+  $('tip-pct').value = '';
   $('tip-amt').value = '';
   $('tip-total').value = '';
   state.receiptTip = 0;
@@ -2565,10 +2608,9 @@ function applyParsed(parsed, { mode = 'replace', photo = null, replaces = null }
   state.tipEven = state.fees.some((f) => f.even); // a delivery order: the driver's tip splits evenly
   if (figs.tip !== null && figs.tip > 0) {
     if (figs.gratuity) {
-      // A gratuity the restaurant added is its own row, not the tip. The tip starts at 0.
+      // A gratuity the restaurant added is its own row, not the tip. The note above the tip says so.
       if (mode === 'replace' || mode === 'redo' || !state.gratuities.length) {
         state.gratuities = [{ id: newId(), name: parsed.tipName || 'Gratuity', raw: centsToInput(figs.tip), even: false }];
-        zeroTip();
       }
     } else if (mode === 'replace' || !$('tip-amt').value.trim()) {
       // A tip printed on the receipt (a card slip): someone already chose it.
@@ -2934,7 +2976,7 @@ async function resetAll() {
   state.tipEven = false;
   state.editing = null;
   for (const id of ['tip-amt', 'tip-total', 'person-name', 'copy-fallback-text']) $(id).value = '';
-  $('tip-pct').value = '20';
+  $('tip-pct').value = '';
   $('paste-note').replaceChildren();
   $('copy-fallback').hidden = true;
   setPasteOpen(false);

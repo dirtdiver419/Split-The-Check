@@ -750,3 +750,15 @@ body.no-scroll { overflow: hidden; }
 .grat-note { margin: 0 0 .5rem; }
 /* The gratuity note in the tip box sits above the Percent / Amount / Total choice. */
 #tip-single .tip-note { margin: 0 0 .7rem; }
+
+/* ================= 2.9.0 ================= */
+/* "Paid so far" while short: a plain fact, not an error. */
+.check.muted { color: var(--muted); font-weight: 400; }
+/* "No tip added" after the green "Everything's assigned." */
+#results-blocked .no-tip { color: #b6c4cf; font-weight: 400; }
+/* Fill in the rest, on the last blank payer. */
+.payer-block .fill-rest { display: inline-block; margin: 0 0 .35rem; min-height: 2.75rem; }
+.payer-block .fill-rest:disabled { color: #8f8c80; text-decoration-color: #c9c6b8; cursor: default; }
+/* Each payer's Percent | Amount: two equal halves, words centered. */
+.payer-block .seg { display: flex; }
+.payer-block .seg label { flex: 1 1 0; display: flex; align-items: center; justify-content: center; text-align: center; }

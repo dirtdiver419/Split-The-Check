@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.0] - 2026-11-15
+
+### Added
+
+- **Fill in the rest.** With two or more payers, once everyone but one has entered what they paid, the last one gets a **Fill in the rest** link between their name and **Paid**. It types in what's left of the bill before tips, once, as an ordinary amount you can change. So "the rest on mine, please" takes one click. Grayed out when the others already cover it.
+- **Paid so far**, under the payers' cards, keeps a running count against the bill before tips. It's gray while there's still some to go ("$10.03 to go"), green at exactly the bill, and red when the payments come out higher.
+
+### Changed
+
+- Tip boxes start empty, and no 15/18/20/22% button is selected. The site records a tip someone left, or is about to write on the slip, so it no longer suggests 20%. The buttons stay as shortcuts. A blank tip doesn't hold anything up. The shares show with no tip, and the end line adds a gray "No tip added" (or "No tip added for Ben"). A typed 0 counts as a choice and gets no note. This applies with a gratuity on the bill too, where the note above the tip still says it's already included.
+- With several payers, each one's tip is **Percent** or **Amount**. The card **Total** option is gone there, since a slip prints the amount and tip separately anyway, and it kept "Paid so far" from adding up honestly. One payer still has **Total**.
+- "Paid so far" comes before the cards' tip line, and replaces "The cards cover the whole bill."
+
 ## [2.8.0] - 2026-11-15
 
 ### Added

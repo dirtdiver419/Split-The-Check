@@ -160,10 +160,10 @@
           <div class="chips" id="tip-presets">
             <button type="button" class="chip" data-pct="15" aria-pressed="false">15%</button>
             <button type="button" class="chip" data-pct="18" aria-pressed="false">18%</button>
-            <button type="button" class="chip" data-pct="20" aria-pressed="true">20%</button>
+            <button type="button" class="chip" data-pct="20" aria-pressed="false">20%</button>
             <button type="button" class="chip" data-pct="22" aria-pressed="false">22%</button>
           </div>
-          <div class="money pct"><input id="tip-pct" type="text" inputmode="decimal" autocomplete="off" value="20" aria-label="Tip percent"><span aria-hidden="true">%</span></div>
+          <div class="money pct"><input id="tip-pct" type="text" inputmode="decimal" autocomplete="off" value="" aria-label="Tip percent"><span aria-hidden="true">%</span></div>
           <p id="tip-pct-err" class="field-error" hidden></p>
           <p class="note">Percent of the food and drink, before tax.</p>
         </div>
@@ -182,8 +182,8 @@
       <div id="payers" hidden>
         <p class="payers-title">What each payer put on their card</p>
         <div id="payer-blocks"></div>
-        <p id="cards-tip" class="tip-cards" aria-live="polite"></p>
         <p id="cards-check" class="check"></p>
+        <p id="cards-tip" class="tip-cards" aria-live="polite"></p>
       </div>
 
       <div class="field tip-split">
@@ -223,7 +223,7 @@
     <p>Nothing on this page is stored. Close or refresh it and everything's gone.</p>
     <p class="disclaimer">Not financial advice. The receipt reader can make mistakes, so check the items, prices and totals against the actual receipt before anyone pays.</p>
     <p><a class="guide-link" href="guide.html">How to use it</a></p>
-    <p class="version">Version 2.8.0</p>
+    <p class="version">Version 2.9.0</p>
   </footer>
 
   <div id="undo-bar" class="undo-bar" role="status" aria-live="polite" hidden>

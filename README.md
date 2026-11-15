@@ -9,7 +9,7 @@ Open it: https://dirtdiver419.github.io/Split-The-Check/
 1. Take a photo of the receipt, or type or paste the items.
 2. Add everyone at the table and mark who paid.
 3. Select who had each item. Use **Options** on a row for quantities, add-ons, splitting and more.
-4. Check the tax and pick a tip.
+4. Check the tax and enter the tip.
 5. Copy or screenshot everyone's share.
 
 The full guide, with every button explained, is at https://dirtdiver419.github.io/Split-The-Check/guide.html and linked at the bottom of the site.
