@@ -681,7 +681,52 @@ body.no-scroll { overflow: hidden; }
 .guide .back { color: var(--brass); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
 .guide .toc { display: flex; flex-wrap: wrap; gap: .35rem 1rem; margin: 1rem 0 0; padding: 0; list-style: none; }
 .guide .toc a { color: #c5d0d9; font-size: .9rem; text-decoration: underline; text-decoration-color: #c5d0d966; text-underline-offset: 3px; }
-.guide .sample { margin: .9rem 0 0; }
-.guide .sample-link { color: var(--brass); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
 /* "How to use it" in the site footer */
 .foot .guide-link { color: var(--brass); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
+
+/* ================= 2.7.0 ================= */
+/* Straighten slider in the crop screen. Gold runs from the middle (0) out to the knob. */
+.straighten { margin-top: 1rem; }
+.straighten-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: .35rem; }
+.straighten-head label { font-weight: 700; }
+.straighten-head output { font-weight: 700; font-variant-numeric: tabular-nums; }
+.straighten-head output.auto { font-weight: 400; color: #b6c4cf; }
+.straighten-row { display: flex; align-items: center; gap: .5rem; }
+.straighten .nudge {
+  min-width: 2.75rem; padding: 0; font-size: 1.25rem; line-height: 1;
+  color: var(--paper); background: transparent; box-shadow: inset 0 0 0 1.5px #5f7d94;
+}
+.straighten .nudge:hover:not(:disabled) { background: #ffffff14; }
+.straighten .nudge:disabled { color: #5f7d94; box-shadow: inset 0 0 0 1.5px #34495a; cursor: default; }
+#crop-angle {
+  --from: 50%; --to: 50%;
+  flex: 1; min-width: 0; height: 2.75rem; margin: 0; background: transparent; cursor: pointer;
+  -webkit-appearance: none; appearance: none;
+}
+#crop-angle::-webkit-slider-runnable-track {
+  height: .4rem; border-radius: 999px;
+  background: linear-gradient(to right, #5f7d94 var(--from), var(--brass) var(--from), var(--brass) var(--to), #5f7d94 var(--to));
+}
+#crop-angle::-moz-range-track {
+  height: .4rem; border-radius: 999px;
+  background: linear-gradient(to right, #5f7d94 var(--from), var(--brass) var(--from), var(--brass) var(--to), #5f7d94 var(--to));
+}
+#crop-angle::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none; margin-top: -.6rem;
+  width: 1.6rem; height: 1.6rem; border-radius: 50%; background: var(--brass); border: 3px solid #00111d;
+}
+#crop-angle::-moz-range-thumb {
+  width: 1.6rem; height: 1.6rem; border-radius: 50%; background: var(--brass); border: 3px solid #00111d; box-sizing: border-box;
+}
+#crop-angle:focus-visible { outline: none; box-shadow: none; }
+#crop-angle:focus-visible::-webkit-slider-thumb { outline: 3px solid var(--paper); outline-offset: 2px; }
+#crop-angle:focus-visible::-moz-range-thumb { outline: 3px solid var(--paper); outline-offset: 2px; }
+
+/* Guide: the sample bill is a wide gold button. */
+.guide .sample { margin: 1.1rem 0 .4rem; text-align: center; }
+.guide .sample .sample-link {
+  display: block; box-sizing: border-box; width: min(100%, 20rem); margin: 0 auto;
+  background: var(--brass); color: var(--booth); text-decoration: none;
+  font-weight: 700; font-size: 1.05rem; padding: .8rem 1rem; min-height: 2.75rem; border-radius: var(--radius-control);
+}
+.guide .sample .sample-link:hover { background: #cdb77e; }

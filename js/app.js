@@ -1,7 +1,7 @@
 import { parseMoney, parsePercent, formatMoney, centsToInput, computeSplit, splitEven, settleUp } from './split.js';
 import { bestParse, pairColumns, textFromWords, wordsFromBlocks, linesFromBlocks, scoreParse } from './parse.js';
 import { CHARGE_RE } from './charges.js';
-import { toGray, resampleGray } from './image.js';
+import { toGray, resampleGray, measureSkew } from './image.js';
 
 // Everything lives in this object, in memory only. No localStorage, no cookies,
 // no IndexedDB, no network writes. Refreshing the page wipes it.
@@ -1725,16 +1725,22 @@ function renderAll() {
 /*
  * Photos of the receipt, in memory only. A long receipt can be several photos ("parts").
  * Each record is fixed once made: a new crop makes a new record, so Undo can go back to the old one.
- * photo = { id, file, url, cropUrl, crop, rotation }
+ * photo = { id, file, url, cropUrl, straightUrl, crop, rotation, fine, autoAngle, sample }
+ *   rotation  = quarter turns from the crop screen (0/90/180/270)
+ *   fine      = the person's own straightening angle from the slider (0 = automatic)
+ *   autoAngle = how far automatic straightening turned it (0 = not needed)
+ *   straightUrl = the straightened color photo, shown in place of the photo when set
  */
 const photoPool = new Set();
+const STRAIGHTEN_MIN = 3; // degrees of lean before automatic straightening steps in
+const CORNER_GRAY = '#9ba3aa'; // fills the corners a turned photo leaves empty
 
-function newPhoto(file, { crop = null, rotation = 0, sample = false } = {}) {
-  const photo = { id: newId(), file, url: URL.createObjectURL(file), cropUrl: null, crop, rotation, sample };
+function newPhoto(file, { crop = null, rotation = 0, fine = 0, sample = false } = {}) {
+  const photo = { id: newId(), file, url: URL.createObjectURL(file), cropUrl: null, straightUrl: null, crop, rotation, fine, autoAngle: 0, sample };
   photoPool.add(photo);
   return photo;
 }
-const shownUrl = (photo) => photo.cropUrl || photo.url;
+const shownUrl = (photo) => photo.straightUrl || photo.cropUrl || photo.url;
 
 /** Let go of photos that nothing (the page or an Undo step) points at any more. */
 function releasePhotos() {
@@ -1744,6 +1750,7 @@ function releasePhotos() {
     if (live.has(ph)) continue;
     URL.revokeObjectURL(ph.url);
     if (ph.cropUrl) URL.revokeObjectURL(ph.cropUrl);
+    if (ph.straightUrl) URL.revokeObjectURL(ph.straightUrl);
     photoPool.delete(ph);
   }
 }
@@ -1912,6 +1919,37 @@ function grayCanvas(source) {
   }
   ctx.putImageData(img, 0, 0);
   return canvas;
+}
+
+/** How far the print leans, measured on the cleaned-up copy (see measureSkew in image.js). */
+function skewOf(canvas) {
+  const { width: w, height: h } = canvas;
+  const d = canvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, w, h).data;
+  const lum = new Float32Array(w * h);
+  for (let i = 0, j = 0; j < lum.length; i += 4, j++) lum[j] = d[i];
+  return measureSkew(lum, w, h);
+}
+
+/**
+ * A copy of an image turned `deg` degrees around its middle (positive = clockwise),
+ * same size, with the empty corners filled. `cap` limits the long side (for display copies).
+ */
+function turnedCanvas(src, deg, fill, cap = Infinity) {
+  const { w: w0, h: h0 } = srcSize(src);
+  const s = Math.min(1, cap / Math.max(w0, h0));
+  const w = Math.max(1, Math.round(w0 * s));
+  const h = Math.max(1, Math.round(h0 * s));
+  const out = document.createElement('canvas');
+  out.width = w;
+  out.height = h;
+  const ctx = out.getContext('2d');
+  ctx.fillStyle = fill;
+  ctx.fillRect(0, 0, w, h);
+  ctx.imageSmoothingQuality = 'high';
+  ctx.translate(w / 2, h / 2);
+  ctx.rotate((deg * Math.PI) / 180);
+  ctx.drawImage(src, -w / 2, -h / 2, w, h);
+  return out;
 }
 
 /**
@@ -2133,7 +2171,7 @@ async function scan(file, { sample = false } = {}) {
   const snap = snapshot();
   const had = realItems().length > 0; // a first reading has nothing to go back to
   const photo = newPhoto(file, { sample });
-  const parsed = await read(() => decodeImage(file));
+  const parsed = await read(() => decodeImage(file), { photo });
   if (parsed === STALE) { releasePhotos(); return; }
   if (parsed) {
     state.photos = [photo];
@@ -2153,7 +2191,7 @@ async function addPart(file) {
   if (state.photos.length >= 6) { showError('That’s the most photos for one receipt.'); return; }
   const snap = snapshot();
   const photo = newPhoto(file);
-  const parsed = await read(() => decodeImage(file));
+  const parsed = await read(() => decodeImage(file), { photo });
   if (parsed === STALE) { releasePhotos(); return; }
   if (parsed) {
     state.photos = [...state.photos, photo];
@@ -2171,7 +2209,7 @@ function sourceOf(photo) {
   return async () => {
     const img = await decodeImage(photo.file);
     if (!photo.crop) return img;
-    const out = cropCanvas(img, photo.crop, photo.rotation);
+    const out = cropCanvas(img, photo.crop, photo.rotation, photo.fine);
     if (typeof img.close === 'function') img.close();
     return out;
   };
@@ -2184,7 +2222,7 @@ async function scanAgain() {
   const single = state.photos.length === 1;
   if (!(await confirmReplace(single ? state.items : photoItems(photo)))) return;
   const snap = snapshot();
-  const parsed = await read(sourceOf(photo), { darker: true });
+  const parsed = await read(sourceOf(photo), { darker: true, photo });
   if (parsed === STALE) return;
   if (parsed) {
     applyParsed(parsed, single ? { mode: 'replace', photo } : { mode: 'redo', photo, replaces: photo });
@@ -2202,7 +2240,7 @@ const STALE = Symbol('stale');
  * `darker` (Deep scan) reads only with darker grays. Returns the reading, null if it
  * failed, or STALE if another reading started meanwhile.
  */
-async function read(getSource, { darker = false } = {}) {
+async function read(getSource, { darker = false, photo = null } = {}) {
   if (typeof window.Tesseract === 'undefined') {
     showError('The receipt reader didn’t load. Refresh the page and try again.');
     return null;
@@ -2215,13 +2253,25 @@ async function read(getSource, { darker = false } = {}) {
   let worker = null;
   let gray = null;
   let evened = null;
+  let straight = null; // { angle, gray, evened, show } when the photo leans enough to straighten
   let pass = 1;
   try {
     const source = await getSource();
     gray = grayCanvas(source);
+    evened = evenedCanvas(gray);
+    // Automatic straightening, unless the person set an angle on the slider themselves.
+    // Only the reader's copy is turned here. The color copy is turned for showing.
+    if (photo && !photo.fine) {
+      const angle = skewOf(evened);
+      if (Math.abs(angle) >= STRAIGHTEN_MIN) {
+        const sg = turnedCanvas(gray, -angle, '#ffffff');
+        straight = { angle, gray: sg, evened: evenedCanvas(sg), show: darker ? null : turnedCanvas(source, -angle, CORNER_GRAY, 2400), used: true };
+      }
+    }
     if (typeof source.close === 'function') source.close();
     else if (source instanceof HTMLCanvasElement) { source.width = 0; source.height = 0; }
-    evened = evenedCanvas(gray);
+    const E = straight ? straight.evened : evened;
+    const G = straight ? straight.gray : gray;
 
     const base = document.baseURI;
     worker = await window.Tesseract.createWorker('eng', 1, {
@@ -2246,38 +2296,50 @@ async function read(getSource, { darker = false } = {}) {
     // (faint print), then the plain photo, and keep whichever reading lands closest.
     let parsed;
     if (darker) {
-      const canvas = darkCanvas(evened);
+      const canvas = darkCanvas(E);
       parsed = await readImage(worker, canvas);
       canvas.width = 0; canvas.height = 0;
       if (token !== state.scanToken) return STALE;
     } else {
-      parsed = await readImage(worker, evened);
+      parsed = await readImage(worker, E);
       if (token !== state.scanToken) return STALE;
-      for (const next of [() => darkCanvas(evened), () => gray]) {
+      for (const next of [() => darkCanvas(E), () => G]) {
         if (scoreParse(parsed) >= 10000) break;
         pass++;
         const canvas = next();
         const other = await readImage(worker, canvas);
-        if (canvas !== gray) { canvas.width = 0; canvas.height = 0; }
+        if (canvas !== G) { canvas.width = 0; canvas.height = 0; }
         if (token !== state.scanToken) return STALE;
         if (scoreParse(other) > scoreParse(parsed)) parsed = other;
       }
       // It added up, but faint print (like "2 @ $8.25" under a dish) may have been skipped.
-      if (pass === 1 && scoreParse(parsed) >= 10000 && faintInk(evened)) {
+      if (pass === 1 && scoreParse(parsed) >= 10000 && faintInk(E)) {
         pass++;
-        const canvas = darkCanvas(evened);
+        const canvas = darkCanvas(E);
         const other = await readImage(worker, canvas);
         canvas.width = 0; canvas.height = 0;
         if (token !== state.scanToken) return STALE;
         parsed = borrowQuantities(parsed, other);
       }
     }
+    // A straightened reading that still doesn't add up gets one look at the photo as taken.
+    if (straight && !darker && scoreParse(parsed) < 10000) {
+      pass++;
+      const other = await readImage(worker, evened);
+      if (token !== state.scanToken) return STALE;
+      if (scoreParse(other) > scoreParse(parsed)) { parsed = other; straight.used = false; }
+    }
+    if (straight && straight.used && straight.show && photo) {
+      const blob = await new Promise((res) => straight.show.toBlob(res, 'image/jpeg', 0.9));
+      if (token !== state.scanToken) return STALE;
+      if (blob) { photo.straightUrl = URL.createObjectURL(blob); photo.autoAngle = straight.angle; }
+    }
     return parsed;
   } catch {
     return token === state.scanToken ? null : STALE;
   } finally {
     if (worker) worker.terminate().catch(() => {});
-    for (const c of [gray, evened]) if (c) { c.width = 0; c.height = 0; }
+    for (const c of [gray, evened, straight?.gray, straight?.evened, straight?.show]) if (c) { c.width = 0; c.height = 0; }
   }
 }
 
@@ -2413,17 +2475,28 @@ function applyParsed(parsed, { mode = 'replace', photo = null, replaces = null }
 
 /* -------------------------------------------------------- crop and rotate */
 
-const crop = { img: null, drag: null, photo: null, work: null }; // work = { rotation, crop } while the crop screen is open
+const crop = { img: null, drag: null, photo: null, work: null }; // work = { rotation, fine, crop } while the crop screen is open
 
 function rotatedSize() {
   const { w, h } = srcSize(crop.img);
   return crop.work.rotation % 180 ? { rw: h, rh: w } : { rw: w, rh: h };
 }
 
-/** Draw the photo turned by `rotation` degrees, in rotated-image coordinates. */
-function drawRotated(ctx, img, rw, rh, rotation) {
+/**
+ * Draw the photo turned by `rotation` (quarter turns) and then `fine` degrees from the
+ * Straighten slider, in rotated-image coordinates. A fine turn keeps the same frame,
+ * so its empty corners are filled with gray first.
+ */
+function drawRotated(ctx, img, rw, rh, rotation, fine = 0) {
   const { w, h } = srcSize(img);
   ctx.save();
+  if (fine) {
+    ctx.fillStyle = CORNER_GRAY;
+    ctx.fillRect(0, 0, rw, rh);
+    ctx.translate(rw / 2, rh / 2);
+    ctx.rotate((fine * Math.PI) / 180);
+    ctx.translate(-rw / 2, -rh / 2);
+  }
   if (rotation === 90) { ctx.translate(rw, 0); ctx.rotate(Math.PI / 2); }
   else if (rotation === 180) { ctx.translate(rw, rh); ctx.rotate(Math.PI); }
   else if (rotation === 270) { ctx.translate(0, rh); ctx.rotate(-Math.PI / 2); }
@@ -2432,7 +2505,7 @@ function drawRotated(ctx, img, rw, rh, rotation) {
 }
 
 /** Cut a crop out of the turned photo at full resolution (long side capped at 6000px). */
-function cropCanvas(img, r, rotation) {
+function cropCanvas(img, r, rotation, fine = 0) {
   const { w, h } = srcSize(img);
   const rw = rotation % 180 ? h : w;
   const rh = rotation % 180 ? w : h;
@@ -2446,7 +2519,7 @@ function cropCanvas(img, r, rotation) {
   ctx.imageSmoothingQuality = 'high';
   ctx.scale(s, s);
   ctx.translate(-r.x * rw, -r.y * rh);
-  drawRotated(ctx, img, rw, rh, rotation);
+  drawRotated(ctx, img, rw, rh, rotation, fine);
   return out;
 }
 
@@ -2466,7 +2539,7 @@ function drawCrop() {
   const ctx = canvas.getContext('2d');
   ctx.setTransform((cssW * dpr) / rw, 0, 0, (cssH * dpr) / rh, 0, 0);
   ctx.imageSmoothingQuality = 'high';
-  drawRotated(ctx, crop.img, rw, rh, crop.work.rotation);
+  drawRotated(ctx, crop.img, rw, rh, crop.work.rotation, crop.work.fine);
   placeBox();
 }
 
@@ -2492,9 +2565,10 @@ async function openCrop() {
   }
   // The crop screen always shows the whole photo, so a crop can be widened again.
   crop.photo = photo;
-  crop.work = { rotation: photo.rotation, crop: photo.crop ? { ...photo.crop } : fullCrop() };
+  crop.work = { rotation: photo.rotation, fine: photo.fine || 0, crop: photo.crop ? { ...photo.crop } : fullCrop() };
   $('crop').hidden = false;
   document.body.classList.add('no-scroll');
+  showFine();
   drawCrop();
   $('crop-read').focus();
 }
@@ -2566,6 +2640,35 @@ function onHandleKey(e) {
   resizeCrop(handle, ...moves[e.key]);
 }
 
+/* Straighten slider: −15° to +15° in half degrees. 0 means automatic straightening. */
+const FINE_MAX = 15;
+const fineText = (v) => (v === 0 ? 'Automatic' : `${v < 0 ? '−' : ''}${Math.abs(v).toFixed(1)}°`);
+const fineSpoken = (v) => (v === 0 ? 'Automatic' : `${Math.abs(v)} degrees ${v < 0 ? 'left' : 'right'}`);
+
+/** Show the slider's angle: the number, and gold from the middle of the track out to the knob. */
+function showFine() {
+  const v = crop.work.fine;
+  const range = $('crop-angle');
+  range.value = String(v);
+  range.setAttribute('aria-valuetext', fineSpoken(v));
+  const out = $('crop-angle-val');
+  out.textContent = fineText(v);
+  out.classList.toggle('auto', v === 0);
+  const at = ((v + FINE_MAX) / (2 * FINE_MAX)) * 100;
+  range.style.setProperty('--from', `${Math.min(50, at)}%`);
+  range.style.setProperty('--to', `${Math.max(50, at)}%`);
+  $('crop-angle-down').disabled = v <= -FINE_MAX;
+  $('crop-angle-up').disabled = v >= FINE_MAX;
+}
+
+function setFine(v) {
+  const n = Math.max(-FINE_MAX, Math.min(FINE_MAX, Math.round(Number(v) * 2) / 2)) || 0;
+  if (n === crop.work.fine) { showFine(); return; }
+  crop.work.fine = n;
+  showFine();
+  drawCrop();
+}
+
 function rotateCrop() {
   crop.work.rotation = (crop.work.rotation + 90) % 360;
   crop.work.crop = fullCrop();
@@ -2581,7 +2684,7 @@ async function readCrop() {
   const snap = snapshot();
   const had = realItems().length > 0;
   const img = crop.img;
-  const { rotation, crop: r } = crop.work;
+  const { rotation, fine, crop: r } = crop.work;
   crop.img = null; // the reader owns it now
   crop.photo = null;
   $('crop').hidden = true;
@@ -2589,15 +2692,15 @@ async function readCrop() {
   const screen = $('crop-canvas');
   screen.width = 0;
   screen.height = 0;
-  const photo = newPhoto(old.file, { crop: r, rotation, sample: old.sample });
+  const photo = newPhoto(old.file, { crop: r, rotation, fine, sample: old.sample });
   const parsed = await read(async () => {
-    const out = cropCanvas(img, r, rotation);
+    const out = cropCanvas(img, r, rotation, fine);
     if (typeof img.close === 'function') img.close();
     // Keep a copy of the crop to show in place of the whole photo.
     const blob = await new Promise((res) => out.toBlob(res, 'image/jpeg', 0.9));
     if (blob) photo.cropUrl = URL.createObjectURL(blob);
     return out;
-  });
+  }, { photo });
   if (parsed === STALE) { releasePhotos(); return; }
   if (parsed) {
     state.photos = state.photos.map((ph) => (ph === old ? photo : ph));
@@ -2693,6 +2796,9 @@ $('photo-add').addEventListener('change', (e) => {
 $('crop-open').addEventListener('click', openCrop);
 $('crop-cancel').addEventListener('click', closeCrop);
 $('crop-rotate').addEventListener('click', rotateCrop);
+$('crop-angle').addEventListener('input', (e) => setFine(e.target.value));
+$('crop-angle-down').addEventListener('click', () => setFine(crop.work.fine - 0.5));
+$('crop-angle-up').addEventListener('click', () => setFine(crop.work.fine + 0.5));
 $('crop-read').addEventListener('click', readCrop);
 $('crop-stage').addEventListener('pointerdown', onCropPointerDown);
 $('crop-stage').addEventListener('pointermove', onCropPointerMove);

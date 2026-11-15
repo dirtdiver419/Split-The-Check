@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.0] - 2026-11-15
+
+### Added
+
+- **Automatic straightening.** A receipt photographed at a slant is now straightened before it's read. The site measures how far the printed lines lean by trying every angle from −20° to +20° and keeping the one where the rows of text line up most sharply (a projection profile, for the curious). Past 3°, the reader gets a straightened copy. If that copy somehow reads worse than the photo as taken, the site keeps whichever adds up. On made-up test receipts tilted 5° to 20°, 2.6.1 read almost nothing ("geef pho") and 2.7.0 reads every line.
+- The photo at the top and **Show receipt** show the straightened photo, in color, with gray in the corners where it was turned. Photos leaning less than 3° stay as they were.
+- **Straighten** in the crop screen: a slider from −15° to +15° in half degrees, with **−** and **+** buttons for exact steps. The photo turns as you move it, and the gold part of the track runs from the middle out to the knob. At 0 it says **Automatic**. Set any other angle and automatic straightening is off for that photo, so it reads at exactly your angle. Arrow keys move it half a degree at a time.
+
+### Changed
+
+- **Try it with a sample bill** in the guide is now a wide gold button instead of a link.
+- The guide explains straightening, and Troubleshooting has a line for crooked photos.
+
 ## [2.6.1] - 2026-11-14
 
 ### Fixed

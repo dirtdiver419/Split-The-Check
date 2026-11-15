@@ -208,7 +208,7 @@
     <p>Nothing on this page is stored. Close or refresh it and everything's gone.</p>
     <p class="disclaimer">Not financial advice. The receipt reader can make mistakes, so check the items, prices and totals against the actual receipt before anyone pays.</p>
     <p><a class="guide-link" href="guide.html">How to use it</a></p>
-    <p class="version">Version 2.6.1</p>
+    <p class="version">Version 2.7.0</p>
   </footer>
 
   <div id="undo-bar" class="undo-bar" role="status" aria-live="polite" hidden>
@@ -252,6 +252,17 @@
           <button type="button" class="handle h-tr" data-h="tr" aria-label="Top right corner. Use arrow keys to move."></button>
           <button type="button" class="handle h-bl" data-h="bl" aria-label="Bottom left corner. Use arrow keys to move."></button>
           <button type="button" class="handle h-br" data-h="br" aria-label="Bottom right corner. Use arrow keys to move."></button>
+        </div>
+      </div>
+      <div class="straighten">
+        <div class="straighten-head">
+          <label for="crop-angle">Straighten</label>
+          <output id="crop-angle-val" class="auto" for="crop-angle">Automatic</output>
+        </div>
+        <div class="straighten-row">
+          <button id="crop-angle-down" class="btn btn-quiet nudge" type="button" aria-label="Turn left half a degree">−</button>
+          <input id="crop-angle" type="range" min="-15" max="15" step="0.5" value="0" aria-valuetext="Automatic">
+          <button id="crop-angle-up" class="btn btn-quiet nudge" type="button" aria-label="Turn right half a degree">+</button>
         </div>
       </div>
       <div class="crop-bar">

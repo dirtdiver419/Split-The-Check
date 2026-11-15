@@ -65,3 +65,48 @@ export function resampleGray(src, w0, h0, w, h) {
   }
   return out;
 }
+
+/**
+ * How far the printed lines lean, in degrees. Positive means the right side is
+ * lower (turned clockwise). Works on a cleaned-up brightness map (paper near white):
+ * the dark pixels are projected onto the vertical axis at each trial angle, and the
+ * angle where the rows of text stack up most sharply wins. Returns 0 when there's
+ * too little ink to tell or no angle stands out.
+ */
+export function measureSkew(lum, w, h, { max = 20 } = {}) {
+  // Work small: about 700px on the long side is plenty to find the lines.
+  const s = Math.min(1, 700 / Math.max(w, h));
+  const sw = Math.max(1, Math.round(w * s));
+  const sh = Math.max(1, Math.round(h * s));
+  const small = s < 1 ? resampleGray(lum, w, h, sw, sh) : lum;
+  const xs = [];
+  const ys = [];
+  for (let y = 0; y < sh; y++) for (let x = 0; x < sw; x++) if (small[y * sw + x] < 140) { xs.push(x - sw / 2); ys.push(y); }
+  if (xs.length < 200) return 0;
+  const step = Math.max(1, Math.floor(xs.length / 60000));
+  const reach = Math.ceil(Math.hypot(sw, sh)) + 2;
+  const bins = new Float64Array(reach * 2);
+  const score = (deg) => {
+    const t = (deg * Math.PI) / 180;
+    const c = Math.cos(t);
+    const sn = Math.sin(t);
+    bins.fill(0);
+    for (let i = 0; i < xs.length; i += step) bins[Math.round(ys[i] * c - xs[i] * sn) + reach]++;
+    let sum = 0;
+    for (let i = 0; i < bins.length; i++) sum += bins[i] * bins[i];
+    return sum;
+  };
+  let best = 0;
+  let bestScore = -1;
+  for (let d = -max; d <= max; d += 0.5) {
+    const v = score(d);
+    if (v > bestScore) { bestScore = v; best = d; }
+  }
+  for (let d = best - 0.5; d <= best + 0.5; d += 0.1) {
+    const v = score(d);
+    if (v > bestScore) { bestScore = v; best = d; }
+  }
+  // Only trust a lean that is clearly sharper than reading it as level.
+  if (bestScore < score(0) * 1.05) return 0;
+  return Math.round(best * 10) / 10;
+}
