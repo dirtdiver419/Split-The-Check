@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.0] - 2026-11-21
+
+### Changed
+
+- **A new photo opens the crop screen first,** before anything is read. Most photos catch some table, so this saves the read-crop-read-again loop, which was most of the waiting. It opens already turned by automatic straightening. Frame the receipt and select **Read this part**, or select it right away to read the whole photo as it is. **Cancel** drops the new photo without touching anything already read. This covers **Take or choose a photo**, **Add the rest of the receipt** and **Use a different photo**. The sample bill still reads straight away.
+- A box nobody moved reads the whole photo, not the slightly smaller box drawn so its corners can be grabbed. So "as it is" really means as it is.
+
+### Added
+
+- **Zoom in the crop screen.** Pinch on a phone or scroll on a computer, up to 4×, centered on your fingers or the pointer. Two fingers drag the view around. Zoomed in, dragging inside the box moves the view too, since the box usually fills it. The corner handles stay the same size at every zoom, and handle moves get finer the closer you are. **Zoom −** / **Fit** / **+** buttons sit next to **↻ Rotate** for keyboards and trackpads. A quarter turn zooms back out.
+- **Fresh files after every update.** The site's stylesheet and scripts are now loaded with the version number attached, so browsers fetch new copies when the version changes and keep using their saved copies otherwise. No more hard refreshing after an update to get rid of yesterday's styles.
+
 ## [2.9.1] - 2026-11-15
 
 ### Changed

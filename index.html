@@ -14,9 +14,9 @@
   <meta name="theme-color" content="#002137">
   <title>Split the check</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/style.css?v=2.10.0">
   <script src="vendor/tesseract/tesseract.min.js" defer></script>
-  <script src="js/app.js" type="module"></script>
+  <script src="js/app.js?v=2.10.0" type="module"></script>
 </head>
 <body>
   <header class="masthead">
@@ -223,7 +223,7 @@
     <p>Nothing on this page is stored. Close or refresh it and everything's gone.</p>
     <p class="disclaimer">Not financial advice. The receipt reader can make mistakes, so check the items, prices and totals against the actual receipt before anyone pays.</p>
     <p><a class="guide-link" href="guide.html">How to use it</a></p>
-    <p class="version">Version 2.9.1</p>
+    <p class="version">Version 2.10.0</p>
   </footer>
 
   <div id="undo-bar" class="undo-bar" role="status" aria-live="polite" hidden>
@@ -259,7 +259,7 @@
   <div id="crop" class="crop-screen" role="dialog" aria-modal="true" aria-labelledby="crop-title" hidden>
     <div class="crop-inner">
       <h2 id="crop-title">Crop the receipt</h2>
-      <p class="note">Drag the corners to frame just the receipt. Only what's inside the box gets read.</p>
+      <p class="note">Drag the corners to frame just the receipt, or read the photo as it is. Pinch or scroll to zoom.</p>
       <div class="crop-stage" id="crop-stage">
         <canvas id="crop-canvas"></canvas>
         <div id="crop-box" class="crop-box">
@@ -283,8 +283,16 @@
           <button id="crop-angle-up" class="btn btn-quiet nudge" type="button" aria-label="Turn right half a degree">+</button>
         </div>
       </div>
-      <div class="crop-bar">
+      <div class="crop-tools">
         <button id="crop-rotate" class="btn btn-quiet" type="button">↻ Rotate</button>
+        <div class="zoom" role="group" aria-labelledby="zoom-label">
+          <span id="zoom-label" class="zoom-label">Zoom</span>
+          <button id="zoom-out" class="btn btn-quiet nudge" type="button" aria-label="Zoom out" disabled>−</button>
+          <button id="zoom-fit" class="btn btn-quiet fit" type="button" aria-label="Zoom to fit" disabled>Fit</button>
+          <button id="zoom-in" class="btn btn-quiet nudge" type="button" aria-label="Zoom in">+</button>
+        </div>
+      </div>
+      <div class="crop-bar">
         <button id="crop-cancel" class="btn btn-quiet" type="button">Cancel</button>
         <button id="crop-read" class="btn btn-brass grow" type="button">Read this part</button>
       </div>

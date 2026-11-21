@@ -1,6 +1,6 @@
-import { parseMoney } from './split.js';
-import { WORDS } from './words.js';
-import { CHARGE_RE } from './charges.js';
+import { parseMoney } from './split.js?v=2.10.0';
+import { WORDS } from './words.js?v=2.10.0';
+import { CHARGE_RE } from './charges.js?v=2.10.0';
 
 /*
  * Turns receipt text into items, add-ons, tax, tip, fees and totals.

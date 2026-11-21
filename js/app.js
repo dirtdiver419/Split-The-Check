@@ -1,7 +1,7 @@
-import { parseMoney, parsePercent, formatMoney, centsToInput, computeSplit, splitEven, settleUp } from './split.js';
-import { bestParse, pairColumns, textFromWords, wordsFromBlocks, linesFromBlocks, scoreParse } from './parse.js';
-import { CHARGE_RE } from './charges.js';
-import { toGray, resampleGray, measureSkew } from './image.js';
+import { parseMoney, parsePercent, formatMoney, centsToInput, computeSplit, splitEven, settleUp } from './split.js?v=2.10.0';
+import { bestParse, pairColumns, textFromWords, wordsFromBlocks, linesFromBlocks, scoreParse } from './parse.js?v=2.10.0';
+import { CHARGE_RE } from './charges.js?v=2.10.0';
+import { toGray, resampleGray, measureSkew } from './image.js?v=2.10.0';
 
 // Everything lives in this object, in memory only. No localStorage, no cookies,
 // no IndexedDB, no network writes. Refreshing the page wipes it.
@@ -2339,13 +2339,13 @@ function checkFile(file) {
 const READ_FAILED = 'Couldn’t read that photo. Try again with the receipt flat and well lit.';
 
 /** A new photo: replaces everything read so far. */
-async function scan(file, { sample = false } = {}) {
+async function scan(file, { sample = false, framed = null } = {}) {
   showError('');
-  if (!checkFile(file) || !(await confirmReplace())) return;
+  if (!framed && (!checkFile(file) || !(await confirmReplace()))) return; // the crop screen already asked
   const snap = snapshot();
   const had = realItems().length > 0; // a first reading has nothing to go back to
-  const photo = newPhoto(file, { sample });
-  const parsed = await read(() => decodeImage(file), { photo });
+  const photo = newPhoto(file, framed ? { ...framed.opts, sample } : { sample });
+  const parsed = await read(framed ? framedSource(framed, photo) : () => decodeImage(file), { photo });
   if (parsed === STALE) { releasePhotos(); return; }
   if (parsed) {
     state.photos = [photo];
@@ -2359,13 +2359,13 @@ async function scan(file, { sample = false } = {}) {
 }
 
 /** "+ Add the rest of the receipt": another photo of the same receipt, added to the list. */
-async function addPart(file) {
+async function addPart(file, { framed = null } = {}) {
   showError('');
-  if (!checkFile(file)) return;
+  if (!framed && !checkFile(file)) return;
   if (state.photos.length >= 6) { showError('That’s the most photos for one receipt.'); return; }
   const snap = snapshot();
-  const photo = newPhoto(file);
-  const parsed = await read(() => decodeImage(file), { photo });
+  const photo = newPhoto(file, framed ? framed.opts : {});
+  const parsed = await read(framed ? framedSource(framed, photo) : () => decodeImage(file), { photo });
   if (parsed === STALE) { releasePhotos(); return; }
   if (parsed) {
     state.photos = [...state.photos, photo];
@@ -2376,6 +2376,21 @@ async function addPart(file) {
   }
   releasePhotos();
   showReceiptState('done');
+}
+
+/**
+ * The reader's source for a photo framed in the crop screen: the decoded image, turned and cut
+ * to the box. A copy is kept to show in place of the whole photo.
+ */
+function framedSource(framed, photo) {
+  return async () => {
+    const { img, opts } = framed;
+    const out = cropCanvas(img, opts.crop, opts.rotation, opts.fine);
+    if (typeof img.close === 'function') img.close();
+    const blob = await new Promise((res) => out.toBlob(res, 'image/jpeg', 0.9));
+    if (blob) photo.cropUrl = URL.createObjectURL(blob);
+    return out;
+  };
 }
 
 /** What the reader reads for a photo: the crop if it was cropped, otherwise the whole photo. */
@@ -2659,7 +2674,10 @@ function applyParsed(parsed, { mode = 'replace', photo = null, replaces = null }
 
 /* -------------------------------------------------------- crop and rotate */
 
-const crop = { img: null, drag: null, photo: null, work: null }; // work = { rotation, fine, crop } while the crop screen is open
+// work = { rotation, fine, manual, auto, crop, moved } while the crop screen is open.
+// pending = { file, kind, back } when it was opened for a photo that hasn't been read yet.
+// view = { z, ox, oy }: zoom, and the photo point (0–1) at the stage's top-left corner.
+const crop = { img: null, drag: null, photo: null, work: null, pending: null, view: { z: 1, ox: 0, oy: 0 }, touches: new Map(), pinch: null };
 
 function rotatedSize() {
   const { w, h } = srcSize(crop.img);
@@ -2721,22 +2739,102 @@ function drawCrop() {
   canvas.style.width = `${cssW}px`;
   canvas.style.height = `${cssH}px`;
   const ctx = canvas.getContext('2d');
-  ctx.setTransform((cssW * dpr) / rw, 0, 0, (cssH * dpr) / rh, 0, 0);
+  const { z, ox, oy } = crop.view;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = CORNER_GRAY;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.setTransform((cssW * dpr * z) / rw, 0, 0, (cssH * dpr * z) / rh, -ox * cssW * dpr * z, -oy * cssH * dpr * z);
   ctx.imageSmoothingQuality = 'high';
   drawRotated(ctx, crop.img, rw, rh, crop.work.rotation, crop.work.fine);
   placeBox();
+  showZoom();
 }
 
+/** The box in stage terms: zoomed and shifted with the view. Its handles keep their size. */
 function placeBox() {
   const r = crop.work.crop;
+  const { z, ox, oy } = crop.view;
   const box = $('crop-box');
-  box.style.left = `${r.x * 100}%`;
-  box.style.top = `${r.y * 100}%`;
-  box.style.width = `${r.w * 100}%`;
-  box.style.height = `${r.h * 100}%`;
+  box.style.left = `${(r.x - ox) * z * 100}%`;
+  box.style.top = `${(r.y - oy) * z * 100}%`;
+  box.style.width = `${r.w * z * 100}%`;
+  box.style.height = `${r.h * z * 100}%`;
+}
+
+/* ------------------------------------------------------------- crop zoom */
+const ZOOM_MAX = 4;
+
+/** Zoom to z, keeping the photo point under (sx, sy) (stage fractions 0–1) where it is. */
+function zoomTo(z, sx = 0.5, sy = 0.5) {
+  const v = crop.view;
+  const nz = Math.max(1, Math.min(ZOOM_MAX, z));
+  const px = v.ox + sx / v.z;
+  const py = v.oy + sy / v.z;
+  crop.view = clampView({ z: nz, ox: px - sx / nz, oy: py - sy / nz });
+  drawCrop();
+}
+
+/** Pan by a stage-fraction distance. */
+function panBy(dx, dy) {
+  const v = crop.view;
+  crop.view = clampView({ z: v.z, ox: v.ox - dx / v.z, oy: v.oy - dy / v.z });
+  drawCrop();
+}
+
+function clampView(v) {
+  const span = 1 / v.z;
+  return { z: v.z, ox: Math.max(0, Math.min(1 - span, v.ox)), oy: Math.max(0, Math.min(1 - span, v.oy)) };
+}
+
+function showZoom() {
+  const z = crop.view.z;
+  $('zoom-out').disabled = z <= 1;
+  $('zoom-fit').disabled = z <= 1;
+  $('zoom-in').disabled = z >= ZOOM_MAX;
+}
+
+/** Where a pointer is, as a fraction of the stage. */
+function stagePoint(e) {
+  const rect = $('crop-canvas').getBoundingClientRect();
+  return { x: (e.clientX - rect.left) / rect.width, y: (e.clientY - rect.top) / rect.height, w: rect.width, h: rect.height };
+}
+
+function onCropWheel(e) {
+  if (!crop.img) return;
+  e.preventDefault();
+  const p = stagePoint(e);
+  zoomTo(crop.view.z * Math.exp(-e.deltaY * 0.0015), p.x, p.y);
 }
 
 const fullCrop = () => ({ x: 0.04, y: 0.03, w: 0.92, h: 0.94 });
+
+/** A new photo: the crop screen opens first, turned to the automatic angle, before any read. */
+async function cropNew(file, kind, back) {
+  showError('');
+  if (!checkFile(file)) return;
+  if (kind === 'part' && state.photos.length >= 6) { showError('That’s the most photos for one receipt.'); return; }
+  if (kind === 'scan' && !(await confirmReplace())) return;
+  try {
+    crop.img = await decodeImage(file);
+  } catch {
+    showError(READ_FAILED);
+    return;
+  }
+  crop.photo = null;
+  crop.pending = { file, kind, back };
+  const auto = autoFineFor(crop.img, 0);
+  crop.work = { rotation: 0, fine: auto, manual: false, auto, crop: fullCrop(), moved: false };
+  showCropScreen();
+}
+
+function showCropScreen() {
+  crop.view = { z: 1, ox: 0, oy: 0 };
+  $('crop').hidden = false;
+  document.body.classList.add('no-scroll');
+  showFine();
+  drawCrop();
+  $('crop-read').focus();
+}
 
 async function openCrop() {
   const photo = await choosePhoto('crop and re-read');
@@ -2749,27 +2847,63 @@ async function openCrop() {
   }
   // The crop screen always shows the whole photo, so a crop can be widened again.
   crop.photo = photo;
-  crop.work = { rotation: photo.rotation, fine: photo.fine || 0, manual: Boolean(photo.manual), auto: 0, crop: photo.crop ? { ...photo.crop } : fullCrop() };
+  crop.pending = null;
+  const whole = !photo.crop || isWhole(photo.crop);
+  crop.work = { rotation: photo.rotation, fine: photo.fine || 0, manual: Boolean(photo.manual), auto: 0, crop: whole ? fullCrop() : { ...photo.crop }, moved: !whole };
   // Automatic opens turned the way the photo was read, so the first nudge starts from there.
   crop.work.auto = photo.manual ? autoFineFor(crop.img, photo.rotation) : clampFine((photo.fine || 0) - (photo.autoAngle || 0));
   if (!crop.work.manual) crop.work.fine = crop.work.auto;
-  $('crop').hidden = false;
-  document.body.classList.add('no-scroll');
-  showFine();
-  drawCrop();
-  $('crop-read').focus();
+  showCropScreen();
 }
 
+/* The box starts just inside the edges so its corners can be grabbed. Left untouched, the whole photo is read. */
+const WHOLE = { x: 0, y: 0, w: 1, h: 1 };
+const isWhole = (r) => r.x === 0 && r.y === 0 && r.w === 1 && r.h === 1;
+const cropToRead = () => (crop.work.moved ? crop.work.crop : WHOLE);
+
+/** Cancel: a photo that hasn't been read yet is dropped. Nothing already read changes. */
 function closeCrop() {
+  const back = crop.pending ? crop.pending.back : null;
   $('crop').hidden = true;
   document.body.classList.remove('no-scroll');
   if (crop.img && typeof crop.img.close === 'function') crop.img.close();
   crop.img = null;
   crop.photo = null;
+  crop.pending = null;
+  crop.touches.clear();
+  crop.pinch = null;
+  crop.drag = null;
   const canvas = $('crop-canvas');
   canvas.width = 0;
   canvas.height = 0;
-  $('crop-open').focus();
+  focusAfterCrop(back);
+}
+
+/** Back to where the person was: the photo button they used, or Crop and re-read. */
+function focusAfterCrop(back) {
+  const shown = (x) => x && (x.closest('label') || x).offsetParent !== null;
+  const target = [back, $('crop-open'), $('photo')].find(shown);
+  if (target) target.focus();
+}
+
+/** Read this part, for a photo that hasn't been read yet. */
+async function readNew() {
+  const { file, kind, back } = crop.pending;
+  const img = crop.img;
+  const { rotation, fine, manual } = crop.work;
+  const framed = { img, opts: { crop: cropToRead(), rotation, fine, manual } };
+  crop.img = null; // the reader owns it now
+  crop.pending = null;
+  crop.touches.clear();
+  crop.pinch = null;
+  $('crop').hidden = true;
+  document.body.classList.remove('no-scroll');
+  const screen = $('crop-canvas');
+  screen.width = 0;
+  screen.height = 0;
+  if (kind === 'part') await addPart(file, { framed });
+  else await scan(file, { framed });
+  focusAfterCrop(back);
 }
 
 /** Move one edge set of the crop box, keeping it inside the photo and at least 8% in size. */
@@ -2784,6 +2918,7 @@ function resizeCrop(handle, dx, dy) {
     const nx = Math.min(1 - r.w, Math.max(0, r.x + dx));
     const ny = Math.min(1 - r.h, Math.max(0, r.y + dy));
     crop.work.crop = { ...r, x: nx, y: ny };
+    crop.work.moved = true;
     placeBox();
     return;
   }
@@ -2792,35 +2927,70 @@ function resizeCrop(handle, dx, dy) {
   if (handle.includes('t')) y1 = Math.min(y2 - MIN, Math.max(0, y1 + dy));
   if (handle.includes('b')) y2 = Math.max(y1 + MIN, Math.min(1, y2 + dy));
   crop.work.crop = { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+  crop.work.moved = true;
   placeBox();
 }
 
+/*
+ * Pointers on the crop stage. A corner resizes the box. At 1×, dragging the box moves it.
+ * Zoomed in, dragging the box (or, with a mouse, outside it) moves the view instead.
+ * Two fingers pinch to zoom and drag the view.
+ */
 function onCropPointerDown(e) {
-  const handle = e.target.closest('.handle')?.dataset.h || (e.target.closest('#crop-box') ? 'move' : null);
-  if (!handle) return;
+  if (e.pointerType === 'touch') {
+    crop.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (crop.touches.size === 2) { crop.drag = null; crop.pinch = pinchState(); e.preventDefault(); return; }
+  }
+  let handle = e.target.closest('.handle')?.dataset.h || (e.target.closest('#crop-box') ? 'move' : null);
+  // Zoomed in, the box usually fills the view, so dragging inside it moves the view instead.
+  if (handle === 'move' && crop.view.z > 1) handle = null;
+  const pan = !handle && (e.pointerType !== 'touch' || e.target.closest('#crop-box')) && crop.view.z > 1;
+  if (!handle && !pan) return;
   e.preventDefault();
   const rect = $('crop-canvas').getBoundingClientRect();
-  crop.drag = { handle, x: e.clientX, y: e.clientY, w: rect.width, h: rect.height, id: e.pointerId };
+  crop.drag = { handle: handle || 'pan', x: e.clientX, y: e.clientY, w: rect.width, h: rect.height, id: e.pointerId };
   e.target.setPointerCapture?.(e.pointerId);
 }
 
+function pinchState() {
+  const [a, b] = [...crop.touches.values()];
+  const rect = $('crop-canvas').getBoundingClientRect();
+  return { dist: Math.hypot(a.x - b.x, a.y - b.y) || 1, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, rect };
+}
+
 function onCropPointerMove(e) {
+  if (crop.touches.has(e.pointerId)) {
+    crop.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (crop.pinch && crop.touches.size === 2) {
+      const now = pinchState();
+      const before = crop.pinch;
+      const { rect } = now;
+      panBy((now.mx - before.mx) / rect.width, (now.my - before.my) / rect.height);
+      zoomTo(crop.view.z * (now.dist / before.dist), (now.mx - rect.left) / rect.width, (now.my - rect.top) / rect.height);
+      crop.pinch = now;
+      return;
+    }
+  }
   const d = crop.drag;
   if (!d || e.pointerId !== d.id) return;
   const dx = (e.clientX - d.x) / d.w;
   const dy = (e.clientY - d.y) / d.h;
   d.x = e.clientX;
   d.y = e.clientY;
-  resizeCrop(d.handle, dx, dy);
+  if (d.handle === 'pan') { panBy(dx, dy); return; }
+  // Stage distances become photo distances: smaller steps when zoomed in.
+  resizeCrop(d.handle, dx / crop.view.z, dy / crop.view.z);
 }
 
 function onCropPointerUp(e) {
+  crop.touches.delete(e.pointerId);
+  if (crop.touches.size < 2) crop.pinch = null;
   if (crop.drag && e.pointerId === crop.drag.id) crop.drag = null;
 }
 
 function onHandleKey(e) {
   const handle = e.target.dataset.h;
-  const step = e.shiftKey ? 0.1 : 0.02;
+  const step = (e.shiftKey ? 0.1 : 0.02) / crop.view.z; // finer when zoomed in
   const moves = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
   if (!handle || !moves[e.key]) return;
   e.preventDefault();
@@ -2893,11 +3063,14 @@ function setMode(manual) {
 function rotateCrop() {
   crop.work.rotation = (crop.work.rotation + 90) % 360;
   crop.work.crop = fullCrop();
+  crop.work.moved = false;
+  crop.view = { z: 1, ox: 0, oy: 0 }; // a new frame: back to the whole photo
   // A quarter turn doesn't change how far the print leans, so the angle carries over.
   drawCrop();
 }
 
 async function readCrop() {
+  if (crop.img && crop.pending) { await readNew(); return; }
   if (!crop.img || !crop.photo) return;
   const old = crop.photo;
   const single = state.photos.length === 1;
@@ -2906,7 +3079,8 @@ async function readCrop() {
   const snap = snapshot();
   const had = realItems().length > 0;
   const img = crop.img;
-  const { rotation, fine, manual, crop: r } = crop.work;
+  const { rotation, fine, manual } = crop.work;
+  const r = cropToRead();
   crop.img = null; // the reader owns it now
   crop.photo = null;
   $('crop').hidden = true;
@@ -3007,7 +3181,7 @@ function onPick(e) {
   const input = e.target;
   const file = input.files && input.files[0];
   input.value = ''; // let go of the input's reference right away
-  scan(file);
+  cropNew(file, 'scan', e.target);
 }
 
 $('photo').addEventListener('change', onPick);
@@ -3015,7 +3189,7 @@ $('photo-again').addEventListener('change', onPick);
 $('photo-add').addEventListener('change', (e) => {
   const file = e.target.files && e.target.files[0];
   e.target.value = '';
-  addPart(file);
+  cropNew(file, 'part', e.target);
 });
 $('crop-open').addEventListener('click', openCrop);
 $('crop-cancel').addEventListener('click', closeCrop);
@@ -3030,6 +3204,10 @@ $('crop-stage').addEventListener('pointerdown', onCropPointerDown);
 $('crop-stage').addEventListener('pointermove', onCropPointerMove);
 $('crop-stage').addEventListener('pointerup', onCropPointerUp);
 $('crop-stage').addEventListener('pointercancel', onCropPointerUp);
+$('crop-stage').addEventListener('wheel', onCropWheel, { passive: false });
+$('zoom-in').addEventListener('click', () => zoomTo(crop.view.z * 1.5));
+$('zoom-out').addEventListener('click', () => zoomTo(crop.view.z / 1.5));
+$('zoom-fit').addEventListener('click', () => zoomTo(1));
 document.querySelectorAll('#crop-box .handle').forEach((h) => h.addEventListener('keydown', onHandleKey));
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('crop').hidden && !$('confirm').open && !$('choose').open) closeCrop(); });
 window.addEventListener('resize', () => { if (!$('crop').hidden && crop.img) drawCrop(); });
