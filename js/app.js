@@ -1,7 +1,7 @@
-import { parseMoney, parsePercent, formatMoney, centsToInput, computeSplit, splitEven, settleUp } from './split.js?v=2.10.0';
-import { bestParse, pairColumns, textFromWords, wordsFromBlocks, linesFromBlocks, scoreParse } from './parse.js?v=2.10.0';
-import { CHARGE_RE } from './charges.js?v=2.10.0';
-import { toGray, resampleGray, measureSkew } from './image.js?v=2.10.0';
+import { parseMoney, parsePercent, formatMoney, centsToInput, computeSplit, splitEven, settleUp } from './split.js?v=2.10.1';
+import { bestParse, pairColumns, textFromWords, wordsFromBlocks, linesFromBlocks, scoreParse } from './parse.js?v=2.10.1';
+import { CHARGE_RE } from './charges.js?v=2.10.1';
+import { toGray, resampleGray, measureSkew } from './image.js?v=2.10.1';
 
 // Everything lives in this object, in memory only. No localStorage, no cookies,
 // no IndexedDB, no network writes. Refreshing the page wipes it.
@@ -2675,45 +2675,66 @@ function applyParsed(parsed, { mode = 'replace', photo = null, replaces = null }
 /* -------------------------------------------------------- crop and rotate */
 
 // work = { rotation, fine, manual, auto, crop, moved } while the crop screen is open.
+//   crop is the box as fractions (0–1) of the turned frame. moved = the person changed it.
 // pending = { file, kind, back } when it was opened for a photo that hasn't been read yet.
-// view = { z, ox, oy }: zoom, and the photo point (0–1) at the stage's top-left corner.
-const crop = { img: null, drag: null, photo: null, work: null, pending: null, view: { z: 1, ox: 0, oy: 0 }, touches: new Map(), pinch: null };
+// view = { k, tx, ty }: the frame drawn at k screen px per photo px, its top-left at (tx, ty) in the stage.
+// box = { x, y, w, h }: the crop box in stage px. It stays put while the photo moves under it.
+const crop = {
+  img: null, drag: null, photo: null, work: null, pending: null,
+  view: { k: 1, tx: 0, ty: 0 }, box: { x: 0, y: 0, w: 1, h: 1 }, size: { w: 0, h: 0 },
+  touches: new Map(), pinch: null, anim: 0, keyTimer: 0,
+};
 
-function rotatedSize() {
-  const { w, h } = srcSize(crop.img);
-  return crop.work.rotation % 180 ? { rw: h, rh: w } : { rw: w, rh: h };
+const CROP_INSET = 24;    // px between the settled box and the stage edge: room for a thumb on each corner
+const CROP_EDGE = 6;      // px a corner can come to the stage edge while dragging
+const CROP_MIN = 44;      // px, the smallest box side
+const ZOOM_MAX = 8;       // most zoom, relative to the whole frame fitted to the stage
+const LOUPE = 116;        // magnifier diameter, px
+const LOUPE_ZOOM = 2.5;
+
+/** The frame a photo is drawn in: quarter turns applied, then big enough to hold the Straighten turn. */
+function frameSize(img, rotation, fine = 0) {
+  const { w, h } = srcSize(img);
+  const qw = rotation % 180 ? h : w;
+  const qh = rotation % 180 ? w : h;
+  if (!fine) return { rw: qw, rh: qh, qw, qh };
+  const a = (Math.abs(fine) * Math.PI) / 180;
+  const c = Math.cos(a);
+  const s = Math.sin(a);
+  return { rw: Math.round(qw * c + qh * s), rh: Math.round(qw * s + qh * c), qw, qh };
 }
+
+const rotatedSize = () => frameSize(crop.img, crop.work.rotation, crop.work.fine);
 
 /**
  * Draw the photo turned by `rotation` (quarter turns) and then `fine` degrees from the
- * Straighten slider, in rotated-image coordinates. A fine turn keeps the same frame,
- * so its empty corners are filled with gray first.
+ * Straighten slider, centered in a rw × rh frame. The frame's empty corners are gray.
  */
 function drawRotated(ctx, img, rw, rh, rotation, fine = 0) {
   const { w, h } = srcSize(img);
+  const qw = rotation % 180 ? h : w;
+  const qh = rotation % 180 ? w : h;
   ctx.save();
-  if (fine) {
+  if (fine || rw !== qw || rh !== qh) {
     ctx.fillStyle = CORNER_GRAY;
     ctx.fillRect(0, 0, rw, rh);
     ctx.translate(rw / 2, rh / 2);
     ctx.rotate((fine * Math.PI) / 180);
-    ctx.translate(-rw / 2, -rh / 2);
+    ctx.translate(-qw / 2, -qh / 2);
   }
-  if (rotation === 90) { ctx.translate(rw, 0); ctx.rotate(Math.PI / 2); }
-  else if (rotation === 180) { ctx.translate(rw, rh); ctx.rotate(Math.PI); }
-  else if (rotation === 270) { ctx.translate(0, rh); ctx.rotate(-Math.PI / 2); }
+  if (rotation === 90) { ctx.translate(qw, 0); ctx.rotate(Math.PI / 2); }
+  else if (rotation === 180) { ctx.translate(qw, qh); ctx.rotate(Math.PI); }
+  else if (rotation === 270) { ctx.translate(0, qh); ctx.rotate(-Math.PI / 2); }
   ctx.drawImage(img, 0, 0, w, h);
   ctx.restore();
 }
 
-/** Cut a crop out of the turned photo at full resolution (long side capped at 6000px). */
+/** Cut a crop out of the turned photo at full resolution (long side 6000px, 16 megapixels at most). */
 function cropCanvas(img, r, rotation, fine = 0) {
-  const { w, h } = srcSize(img);
-  const rw = rotation % 180 ? h : w;
-  const rh = rotation % 180 ? w : h;
+  const { rw, rh } = frameSize(img, rotation, fine);
   const cw = Math.max(1, Math.round(r.w * rw));
   const ch = Math.max(1, Math.round(r.h * rh));
-  const s = Math.min(1, 6000 / Math.max(cw, ch));
+  const s = Math.min(1, 6000 / Math.max(cw, ch), Math.sqrt(16e6 / (cw * ch)));
   const out = document.createElement('canvas');
   out.width = Math.max(1, Math.round(cw * s));
   out.height = Math.max(1, Math.round(ch * s));
@@ -2725,88 +2746,182 @@ function cropCanvas(img, r, rotation, fine = 0) {
   return out;
 }
 
+/** The stage canvas matches the stage, so the photo can move and zoom anywhere inside it. */
+function sizeStage() {
+  const stage = $('crop-stage');
+  const w = Math.max(1, stage.clientWidth);
+  const h = Math.max(1, stage.clientHeight);
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const canvas = $('crop-canvas');
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    canvas.style.width = `${w}px`;
+    canvas.style.height = `${h}px`;
+  }
+  crop.size = { w, h };
+}
+
 function drawCrop() {
   const canvas = $('crop-canvas');
+  const dpr = canvas.width / Math.max(1, crop.size.w);
   const { rw, rh } = rotatedSize();
-  const maxW = $('crop').querySelector('.crop-inner').clientWidth || 360;
-  const maxH = Math.max(240, window.innerHeight * 0.62);
-  const scale = Math.min(maxW / rw, maxH / rh, 1);
-  const cssW = Math.max(1, Math.round(rw * scale));
-  const cssH = Math.max(1, Math.round(rh * scale));
-  const dpr = Math.min(2, window.devicePixelRatio || 1);
-  canvas.width = Math.round(cssW * dpr);
-  canvas.height = Math.round(cssH * dpr);
-  canvas.style.width = `${cssW}px`;
-  canvas.style.height = `${cssH}px`;
+  const { k, tx, ty } = crop.view;
   const ctx = canvas.getContext('2d');
-  const { z, ox, oy } = crop.view;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.fillStyle = CORNER_GRAY;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.setTransform((cssW * dpr * z) / rw, 0, 0, (cssH * dpr * z) / rh, -ox * cssW * dpr * z, -oy * cssH * dpr * z);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.setTransform(dpr * k, 0, 0, dpr * k, dpr * tx, dpr * ty);
   ctx.imageSmoothingQuality = 'high';
   drawRotated(ctx, crop.img, rw, rh, crop.work.rotation, crop.work.fine);
   placeBox();
   showZoom();
 }
 
-/** The box in stage terms: zoomed and shifted with the view. Its handles keep their size. */
 function placeBox() {
-  const r = crop.work.crop;
-  const { z, ox, oy } = crop.view;
-  const box = $('crop-box');
-  box.style.left = `${(r.x - ox) * z * 100}%`;
-  box.style.top = `${(r.y - oy) * z * 100}%`;
-  box.style.width = `${r.w * z * 100}%`;
-  box.style.height = `${r.h * z * 100}%`;
+  const b = crop.box;
+  const el = $('crop-box');
+  el.style.left = `${b.x}px`;
+  el.style.top = `${b.y}px`;
+  el.style.width = `${b.w}px`;
+  el.style.height = `${b.h}px`;
+}
+
+/** The zoom that fits the whole frame inside the stage's inset. */
+function wholeK() {
+  const { rw, rh } = rotatedSize();
+  const aw = Math.max(1, crop.size.w - 2 * CROP_INSET);
+  const ah = Math.max(1, crop.size.h - 2 * CROP_INSET);
+  return Math.min(aw / rw, ah / rh);
+}
+
+/** The view and box that show crop r centered, as large as the stage's inset allows. */
+function settledFor(r) {
+  const { rw, rh } = rotatedSize();
+  const aw = Math.max(1, crop.size.w - 2 * CROP_INSET);
+  const ah = Math.max(1, crop.size.h - 2 * CROP_INSET);
+  const cw = r.w * rw;
+  const ch = r.h * rh;
+  const k = Math.min(aw / cw, ah / ch, wholeK() * ZOOM_MAX);
+  const box = { w: cw * k, h: ch * k };
+  box.x = (crop.size.w - box.w) / 2;
+  box.y = (crop.size.h - box.h) / 2;
+  return { view: { k, tx: box.x - r.x * rw * k, ty: box.y - r.y * rh * k }, box };
+}
+
+/** The box as fractions of the frame, from where it sits over the photo. */
+function syncCrop() {
+  const { rw, rh } = rotatedSize();
+  const { k, tx, ty } = crop.view;
+  const b = crop.box;
+  const x = Math.max(0, (b.x - tx) / (rw * k));
+  const y = Math.max(0, (b.y - ty) / (rh * k));
+  crop.work.crop = { x, y, w: Math.min(1 - x, b.w / (rw * k)), h: Math.min(1 - y, b.h / (rh * k)) };
+}
+
+/** The photo always covers the box: zoom stops there, and panning stops at the photo's edge. */
+function clampView(v) {
+  const { rw, rh } = rotatedSize();
+  const b = crop.box;
+  const k = Math.min(wholeK() * ZOOM_MAX, Math.max(v.k, b.w / rw, b.h / rh));
+  const tx = Math.min(b.x, Math.max(b.x + b.w - rw * k, v.tx));
+  const ty = Math.min(b.y, Math.max(b.y + b.h - rh * k, v.ty));
+  return { k, tx, ty };
+}
+
+/** Start the screen, or start over after a quarter turn: the whole frame, or the given crop. */
+function settleTo(r) {
+  stopSettle();
+  sizeStage();
+  const s = settledFor(r);
+  crop.view = s.view;
+  crop.box = s.box;
+  syncCrop();
+  if (isWhole(r)) crop.work.crop = { ...WHOLE };
+  drawCrop();
+}
+
+function stopSettle() {
+  if (crop.anim) cancelAnimationFrame(crop.anim);
+  crop.anim = 0;
+}
+
+/** After a corner is let go: the box glides back to the middle and the photo zooms to fill it. */
+function settleBox() {
+  stopSettle();
+  const from = { view: { ...crop.view }, box: { ...crop.box } };
+  const to = settledFor(crop.work.crop);
+  const done = () => { crop.view = to.view; crop.box = to.box; crop.anim = 0; drawCrop(); };
+  if (reducedMotion()) { done(); return; }
+  const t0 = performance.now();
+  const mix = (a, b, t) => a + (b - a) * t;
+  const step = (now) => {
+    const p = Math.min(1, (now - t0) / 240);
+    const t = 1 - (1 - p) ** 3;
+    crop.view = { k: mix(from.view.k, to.view.k, t), tx: mix(from.view.tx, to.view.tx, t), ty: mix(from.view.ty, to.view.ty, t) };
+    crop.box = { x: mix(from.box.x, to.box.x, t), y: mix(from.box.y, to.box.y, t), w: mix(from.box.w, to.box.w, t), h: mix(from.box.h, to.box.h, t) };
+    drawCrop();
+    if (p < 1) crop.anim = requestAnimationFrame(step);
+    else done();
+  };
+  crop.anim = requestAnimationFrame(step);
 }
 
 /* ------------------------------------------------------------- crop zoom */
-const ZOOM_MAX = 4;
 
-/** Zoom to z, keeping the photo point under (sx, sy) (stage fractions 0–1) where it is. */
-function zoomTo(z, sx = 0.5, sy = 0.5) {
+/** Zoom by a factor around the stage point (px, py). The box stays put, so the crop tightens or widens. */
+function zoomBy(factor, px = crop.box.x + crop.box.w / 2, py = crop.box.y + crop.box.h / 2) {
+  stopSettle();
   const v = crop.view;
-  const nz = Math.max(1, Math.min(ZOOM_MAX, z));
-  const px = v.ox + sx / v.z;
-  const py = v.oy + sy / v.z;
-  crop.view = clampView({ z: nz, ox: px - sx / nz, oy: py - sy / nz });
+  const k = v.k * factor;
+  const next = clampView({ k, tx: px - ((px - v.tx) * k) / v.k, ty: py - ((py - v.ty) * k) / v.k });
+  if (next.k === v.k && next.tx === v.tx && next.ty === v.ty) return;
+  crop.view = next;
+  crop.work.moved = true;
+  syncCrop();
   drawCrop();
 }
 
-/** Pan by a stage-fraction distance. */
+/** Move the photo under the box by a screen distance. */
 function panBy(dx, dy) {
   const v = crop.view;
-  crop.view = clampView({ z: v.z, ox: v.ox - dx / v.z, oy: v.oy - dy / v.z });
+  const next = clampView({ k: v.k, tx: v.tx + dx, ty: v.ty + dy });
+  if (next.tx === v.tx && next.ty === v.ty) return;
+  crop.view = next;
+  crop.work.moved = true;
+  syncCrop();
   drawCrop();
 }
 
-function clampView(v) {
-  const span = 1 / v.z;
-  return { z: v.z, ox: Math.max(0, Math.min(1 - span, v.ox)), oy: Math.max(0, Math.min(1 - span, v.oy)) };
-}
+const atWhole = () => !crop.work.moved || isNearWhole(crop.work.crop);
 
 function showZoom() {
-  const z = crop.view.z;
-  $('zoom-out').disabled = z <= 1;
-  $('zoom-fit').disabled = z <= 1;
-  $('zoom-in').disabled = z >= ZOOM_MAX;
+  const { rw, rh } = rotatedSize();
+  const b = crop.box;
+  const k = crop.view.k;
+  $('zoom-in').disabled = k >= wholeK() * ZOOM_MAX - 1e-9;
+  $('zoom-out').disabled = k <= Math.max(b.w / rw, b.h / rh) + 1e-9;
+  $('zoom-fit').disabled = atWhole();
 }
 
-/** Where a pointer is, as a fraction of the stage. */
+/** Fit: back to the whole photo. */
+function zoomFit() {
+  crop.work.moved = false;
+  settleTo(WHOLE);
+}
+
+/** Where a pointer is in the stage, px. */
 function stagePoint(e) {
-  const rect = $('crop-canvas').getBoundingClientRect();
-  return { x: (e.clientX - rect.left) / rect.width, y: (e.clientY - rect.top) / rect.height, w: rect.width, h: rect.height };
+  const rect = $('crop-stage').getBoundingClientRect();
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
 }
 
 function onCropWheel(e) {
   if (!crop.img) return;
   e.preventDefault();
   const p = stagePoint(e);
-  zoomTo(crop.view.z * Math.exp(-e.deltaY * 0.0015), p.x, p.y);
+  // A trackpad pinch arrives as a wheel with ctrlKey and small steps.
+  zoomBy(Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015)), p.x, p.y);
 }
-
-const fullCrop = () => ({ x: 0.04, y: 0.03, w: 0.92, h: 0.94 });
 
 /** A new photo: the crop screen opens first, turned to the automatic angle, before any read. */
 async function cropNew(file, kind, back) {
@@ -2823,16 +2938,15 @@ async function cropNew(file, kind, back) {
   crop.photo = null;
   crop.pending = { file, kind, back };
   const auto = autoFineFor(crop.img, 0);
-  crop.work = { rotation: 0, fine: auto, manual: false, auto, crop: fullCrop(), moved: false };
+  crop.work = { rotation: 0, fine: auto, manual: false, auto, crop: { ...WHOLE }, moved: false };
   showCropScreen();
 }
 
 function showCropScreen() {
-  crop.view = { z: 1, ox: 0, oy: 0 };
   $('crop').hidden = false;
   document.body.classList.add('no-scroll');
   showFine();
-  drawCrop();
+  settleTo(crop.work.moved ? crop.work.crop : WHOLE);
   $('crop-read').focus();
 }
 
@@ -2845,34 +2959,41 @@ async function openCrop() {
     showError('Couldn’t open that photo for cropping.');
     return;
   }
-  // The crop screen always shows the whole photo, so a crop can be widened again.
   crop.photo = photo;
   crop.pending = null;
-  const whole = !photo.crop || isWhole(photo.crop);
-  crop.work = { rotation: photo.rotation, fine: photo.fine || 0, manual: Boolean(photo.manual), auto: 0, crop: whole ? fullCrop() : { ...photo.crop }, moved: !whole };
+  const whole = !photo.crop || isNearWhole(photo.crop);
+  crop.work = { rotation: photo.rotation, fine: photo.fine || 0, manual: Boolean(photo.manual), auto: 0, crop: whole ? { ...WHOLE } : { ...photo.crop }, moved: !whole };
   // Automatic opens turned the way the photo was read, so the first nudge starts from there.
-  crop.work.auto = photo.manual ? autoFineFor(crop.img, photo.rotation) : clampFine((photo.fine || 0) - (photo.autoAngle || 0));
+  crop.work.auto = photo.manual ? autoFineFor(crop.img, photo.rotation) : clampAuto((photo.fine || 0) - (photo.autoAngle || 0));
   if (!crop.work.manual) crop.work.fine = crop.work.auto;
   showCropScreen();
 }
 
-/* The box starts just inside the edges so its corners can be grabbed. Left untouched, the whole photo is read. */
+/* Left untouched, or brought back to the edges, the whole photo is read. */
 const WHOLE = { x: 0, y: 0, w: 1, h: 1 };
 const isWhole = (r) => r.x === 0 && r.y === 0 && r.w === 1 && r.h === 1;
-const cropToRead = () => (crop.work.moved ? crop.work.crop : WHOLE);
+const isNearWhole = (r) => r.x < 0.002 && r.y < 0.002 && r.x + r.w > 0.998 && r.y + r.h > 0.998;
+const cropToRead = () => (atWhole() ? { ...WHOLE } : { ...crop.work.crop });
+
+function resetCropGestures() {
+  stopSettle();
+  clearTimeout(crop.keyTimer);
+  crop.touches.clear();
+  crop.pinch = null;
+  crop.drag = null;
+  hideLoupe();
+}
 
 /** Cancel: a photo that hasn't been read yet is dropped. Nothing already read changes. */
 function closeCrop() {
   const back = crop.pending ? crop.pending.back : null;
+  resetCropGestures();
   $('crop').hidden = true;
   document.body.classList.remove('no-scroll');
   if (crop.img && typeof crop.img.close === 'function') crop.img.close();
   crop.img = null;
   crop.photo = null;
   crop.pending = null;
-  crop.touches.clear();
-  crop.pinch = null;
-  crop.drag = null;
   const canvas = $('crop-canvas');
   canvas.width = 0;
   canvas.height = 0;
@@ -2892,10 +3013,9 @@ async function readNew() {
   const img = crop.img;
   const { rotation, fine, manual } = crop.work;
   const framed = { img, opts: { crop: cropToRead(), rotation, fine, manual } };
+  resetCropGestures();
   crop.img = null; // the reader owns it now
   crop.pending = null;
-  crop.touches.clear();
-  crop.pinch = null;
   $('crop').hidden = true;
   document.body.classList.remove('no-scroll');
   const screen = $('crop-canvas');
@@ -2906,56 +3026,119 @@ async function readNew() {
   focusAfterCrop(back);
 }
 
-/** Move one edge set of the crop box, keeping it inside the photo and at least 8% in size. */
-function resizeCrop(handle, dx, dy) {
-  const MIN = 0.08;
-  const r = { ...crop.work.crop };
-  let x1 = r.x;
-  let y1 = r.y;
-  let x2 = r.x + r.w;
-  let y2 = r.y + r.h;
-  if (handle === 'move') {
-    const nx = Math.min(1 - r.w, Math.max(0, r.x + dx));
-    const ny = Math.min(1 - r.h, Math.max(0, r.y + dy));
-    crop.work.crop = { ...r, x: nx, y: ny };
-    crop.work.moved = true;
-    placeBox();
-    return;
-  }
-  if (handle.includes('l')) x1 = Math.min(x2 - MIN, Math.max(0, x1 + dx));
-  if (handle.includes('r')) x2 = Math.max(x1 + MIN, Math.min(1, x2 + dx));
-  if (handle.includes('t')) y1 = Math.min(y2 - MIN, Math.max(0, y1 + dy));
-  if (handle.includes('b')) y2 = Math.max(y1 + MIN, Math.min(1, y2 + dy));
-  crop.work.crop = { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+/** Move a corner by a screen distance. It stays on the photo, inside the stage, and at least CROP_MIN wide. */
+function moveCorner(handle, dx, dy) {
+  const { rw, rh } = rotatedSize();
+  const { k, tx, ty } = crop.view;
+  const b = crop.box;
+  const minX = Math.max(CROP_EDGE, tx);
+  const maxX = Math.min(crop.size.w - CROP_EDGE, tx + rw * k);
+  const minY = Math.max(CROP_EDGE, ty);
+  const maxY = Math.min(crop.size.h - CROP_EDGE, ty + rh * k);
+  let x1 = b.x;
+  let y1 = b.y;
+  let x2 = b.x + b.w;
+  let y2 = b.y + b.h;
+  if (handle.includes('l')) x1 = Math.min(x2 - CROP_MIN, Math.max(minX, x1 + dx));
+  if (handle.includes('r')) x2 = Math.max(x1 + CROP_MIN, Math.min(maxX, x2 + dx));
+  if (handle.includes('t')) y1 = Math.min(y2 - CROP_MIN, Math.max(minY, y1 + dy));
+  if (handle.includes('b')) y2 = Math.max(y1 + CROP_MIN, Math.min(maxY, y2 + dy));
+  crop.box = { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
   crop.work.moved = true;
+  syncCrop();
   placeBox();
+  showZoom();
+}
+
+/* ------------------------------------------------------------ magnifier */
+
+/** The magnifier over a corner: the photo at 2.5× around it, above the finger (below near the top). */
+function showLoupe(handle) {
+  const loupe = $('crop-loupe');
+  const b = crop.box;
+  const cx = handle.includes('l') ? b.x : b.x + b.w;
+  const cy = handle.includes('t') ? b.y : b.y + b.h;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  if (loupe.width !== LOUPE * dpr) { loupe.width = LOUPE * dpr; loupe.height = LOUPE * dpr; }
+  const ctx = loupe.getContext('2d');
+  const z = LOUPE_ZOOM;
+  const half = LOUPE / 2;
+  const { rw, rh } = rotatedSize();
+  const { k, tx, ty } = crop.view;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#00111d';
+  ctx.fillRect(0, 0, loupe.width, loupe.height);
+  // stage point (cx, cy) sits in the middle; everything around it is z times bigger
+  ctx.setTransform(dpr * z * k, 0, 0, dpr * z * k, dpr * (half + (tx - cx) * z), dpr * (half + (ty - cy) * z));
+  ctx.imageSmoothingQuality = 'high';
+  drawRotated(ctx, crop.img, rw, rh, crop.work.rotation, crop.work.fine);
+  // the box: shade outside it, gold edges, and the corner dot
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const L = (x) => half + (x - cx) * z;
+  const T = (y) => half + (y - cy) * z;
+  const bx1 = L(b.x);
+  const by1 = T(b.y);
+  const bx2 = L(b.x + b.w);
+  const by2 = T(b.y + b.h);
+  ctx.fillStyle = 'rgba(10, 20, 17, .62)';
+  ctx.beginPath();
+  ctx.rect(0, 0, LOUPE, LOUPE);
+  ctx.rect(bx1, by1, bx2 - bx1, by2 - by1);
+  ctx.fill('evenodd');
+  ctx.strokeStyle = '#C0A86A';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(bx1, by1, bx2 - bx1, by2 - by1);
+  ctx.beginPath();
+  ctx.arc(half, half, 4, 0, Math.PI * 2);
+  ctx.fillStyle = '#C0A86A';
+  ctx.fill();
+  // where it sits: above the corner, or below it when there's no room above
+  const gap = 34;
+  let top = cy - gap - LOUPE;
+  if (top < 0) top = cy + gap;
+  const left = Math.min(crop.size.w - LOUPE - 4, Math.max(4, cx - half));
+  loupe.style.left = `${left}px`;
+  loupe.style.top = `${top}px`;
+  loupe.hidden = false;
+  $('crop-area').classList.add('dragging');
+}
+
+function hideLoupe() {
+  $('crop-loupe').hidden = true;
+  $('crop-area').classList.remove('dragging');
 }
 
 /*
- * Pointers on the crop stage. A corner resizes the box. At 1×, dragging the box moves it.
- * Zoomed in, dragging the box (or, with a mouse, outside it) moves the view instead.
- * Two fingers pinch to zoom and drag the view.
+ * Pointers on the crop stage, like a phone's photo editor. A corner resizes the box, and
+ * letting go settles it back to the middle. Anywhere else, dragging moves the photo under
+ * the box. Two fingers pinch to zoom and move the photo.
  */
 function onCropPointerDown(e) {
+  if (!crop.img) return;
+  stopSettle();
   if (e.pointerType === 'touch') {
     crop.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (crop.touches.size === 2) { crop.drag = null; crop.pinch = pinchState(); e.preventDefault(); return; }
+    if (crop.touches.size === 2) {
+      const wasCorner = crop.drag && crop.drag.handle !== 'pan';
+      crop.drag = null;
+      hideLoupe();
+      if (wasCorner) settleBox();
+      crop.pinch = pinchState();
+      e.preventDefault();
+      return;
+    }
   }
-  let handle = e.target.closest('.handle')?.dataset.h || (e.target.closest('#crop-box') ? 'move' : null);
-  // Zoomed in, the box usually fills the view, so dragging inside it moves the view instead.
-  if (handle === 'move' && crop.view.z > 1) handle = null;
-  const pan = !handle && (e.pointerType !== 'touch' || e.target.closest('#crop-box')) && crop.view.z > 1;
-  if (!handle && !pan) return;
+  if (e.button > 0) return;
+  const handle = e.target.closest('.handle')?.dataset.h || 'pan';
   e.preventDefault();
-  const rect = $('crop-canvas').getBoundingClientRect();
-  crop.drag = { handle: handle || 'pan', x: e.clientX, y: e.clientY, w: rect.width, h: rect.height, id: e.pointerId };
+  crop.drag = { handle, x: e.clientX, y: e.clientY, id: e.pointerId };
   e.target.setPointerCapture?.(e.pointerId);
+  if (handle !== 'pan') showLoupe(handle);
 }
 
 function pinchState() {
   const [a, b] = [...crop.touches.values()];
-  const rect = $('crop-canvas').getBoundingClientRect();
-  return { dist: Math.hypot(a.x - b.x, a.y - b.y) || 1, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, rect };
+  return { dist: Math.hypot(a.x - b.x, a.y - b.y) || 1, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
 }
 
 function onCropPointerMove(e) {
@@ -2964,46 +3147,56 @@ function onCropPointerMove(e) {
     if (crop.pinch && crop.touches.size === 2) {
       const now = pinchState();
       const before = crop.pinch;
-      const { rect } = now;
-      panBy((now.mx - before.mx) / rect.width, (now.my - before.my) / rect.height);
-      zoomTo(crop.view.z * (now.dist / before.dist), (now.mx - rect.left) / rect.width, (now.my - rect.top) / rect.height);
+      const rect = $('crop-stage').getBoundingClientRect();
+      panBy(now.mx - before.mx, now.my - before.my);
+      zoomBy(now.dist / before.dist, now.mx - rect.left, now.my - rect.top);
       crop.pinch = now;
       return;
     }
   }
   const d = crop.drag;
   if (!d || e.pointerId !== d.id) return;
-  const dx = (e.clientX - d.x) / d.w;
-  const dy = (e.clientY - d.y) / d.h;
+  const dx = e.clientX - d.x;
+  const dy = e.clientY - d.y;
   d.x = e.clientX;
   d.y = e.clientY;
   if (d.handle === 'pan') { panBy(dx, dy); return; }
-  // Stage distances become photo distances: smaller steps when zoomed in.
-  resizeCrop(d.handle, dx / crop.view.z, dy / crop.view.z);
+  moveCorner(d.handle, dx, dy);
+  showLoupe(d.handle);
 }
 
 function onCropPointerUp(e) {
   crop.touches.delete(e.pointerId);
   if (crop.touches.size < 2) crop.pinch = null;
-  if (crop.drag && e.pointerId === crop.drag.id) crop.drag = null;
+  const d = crop.drag;
+  if (d && e.pointerId === d.id) {
+    crop.drag = null;
+    if (d.handle !== 'pan') { hideLoupe(); settleBox(); }
+  }
 }
 
+/** Arrow keys move a focused corner. It settles once the keys have been still for a moment. */
 function onHandleKey(e) {
   const handle = e.target.dataset.h;
-  const step = (e.shiftKey ? 0.1 : 0.02) / crop.view.z; // finer when zoomed in
+  const step = e.shiftKey ? 40 : 8;
   const moves = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
   if (!handle || !moves[e.key]) return;
   e.preventDefault();
-  resizeCrop(handle, ...moves[e.key]);
+  stopSettle();
+  moveCorner(handle, ...moves[e.key]);
+  clearTimeout(crop.keyTimer);
+  crop.keyTimer = setTimeout(settleBox, 700);
 }
 
 /*
- * Straighten: −15° to +15° in half degrees, plus Automatic | Manual.
- * Automatic turns the photo to the measured angle and may fine-tune it while reading.
+ * Straighten: −45° to +45° in half degrees, plus Automatic | Manual. With quarter turns, that reaches every angle.
+ * Automatic turns the photo to the measured angle (up to 15°) and may fine-tune it while reading.
  * Manual reads exactly the angle shown, 0.0° included.
  */
-const FINE_MAX = 15;
+const FINE_MAX = 45;
+const AUTO_MAX = 15;
 const clampFine = (v) => Math.max(-FINE_MAX, Math.min(FINE_MAX, Math.round(Number(v) * 2) / 2)) || 0;
+const clampAuto = (v) => Math.max(-AUTO_MAX, Math.min(AUTO_MAX, clampFine(v))) || 0;
 const fineText = (v) => `${v < 0 ? '−' : ''}${Math.abs(v).toFixed(1)}°`;
 const fineSpoken = (v) => (v === 0 ? 'Level' : `${Math.abs(v)} degrees ${v < 0 ? 'left' : 'right'}`);
 
@@ -3023,7 +3216,7 @@ function autoFineFor(img, rotation) {
   const e = evenedCanvas(g);
   const lean = skewOf(e);
   for (const x of [c, g, e]) { x.width = 0; x.height = 0; }
-  return Math.abs(lean) >= STRAIGHTEN_MIN ? clampFine(-lean) : 0;
+  return Math.abs(lean) >= STRAIGHTEN_MIN ? clampAuto(-lean) : 0;
 }
 
 /** Show the angle, the mode, and gold from the middle of the track out to the knob. */
@@ -3042,31 +3235,43 @@ function showFine() {
   $('crop-angle-up').disabled = v >= FINE_MAX;
 }
 
+/**
+ * A new Straighten angle changes the frame's size. An untouched box stays on the whole photo.
+ * Otherwise the photo turns about the same spot, at the same zoom, under the same box.
+ */
+function turnFine(n) {
+  const before = rotatedSize();
+  crop.work.fine = n;
+  if (!crop.work.moved) { settleTo(WHOLE); return; }
+  stopSettle();
+  const after = rotatedSize();
+  const v = crop.view;
+  crop.view = clampView({ k: v.k, tx: v.tx + ((before.rw - after.rw) * v.k) / 2, ty: v.ty + ((before.rh - after.rh) * v.k) / 2 });
+  syncCrop();
+  drawCrop();
+}
+
 /** Moving the slider or tapping − / + sets the angle by hand. */
 function setFine(v) {
   const n = clampFine(v);
   crop.work.manual = true;
   const moved = n !== crop.work.fine;
-  crop.work.fine = n;
+  if (moved) turnFine(n);
   showFine();
-  if (moved) drawCrop();
 }
 
 function setMode(manual) {
   crop.work.manual = manual;
-  const moved = !manual && crop.work.fine !== crop.work.auto;
-  if (!manual) crop.work.fine = crop.work.auto;
+  if (!manual && crop.work.fine !== crop.work.auto) turnFine(crop.work.auto);
   showFine();
-  if (moved) drawCrop();
 }
 
 function rotateCrop() {
   crop.work.rotation = (crop.work.rotation + 90) % 360;
-  crop.work.crop = fullCrop();
-  crop.work.moved = false;
-  crop.view = { z: 1, ox: 0, oy: 0 }; // a new frame: back to the whole photo
+  crop.work.crop = { ...WHOLE };
+  crop.work.moved = false; // a new frame: back to the whole photo
   // A quarter turn doesn't change how far the print leans, so the angle carries over.
-  drawCrop();
+  settleTo(WHOLE);
 }
 
 async function readCrop() {
@@ -3205,12 +3410,15 @@ $('crop-stage').addEventListener('pointermove', onCropPointerMove);
 $('crop-stage').addEventListener('pointerup', onCropPointerUp);
 $('crop-stage').addEventListener('pointercancel', onCropPointerUp);
 $('crop-stage').addEventListener('wheel', onCropWheel, { passive: false });
-$('zoom-in').addEventListener('click', () => zoomTo(crop.view.z * 1.5));
-$('zoom-out').addEventListener('click', () => zoomTo(crop.view.z / 1.5));
-$('zoom-fit').addEventListener('click', () => zoomTo(1));
+$('zoom-in').addEventListener('click', () => zoomBy(1.5));
+$('zoom-out').addEventListener('click', () => zoomBy(1 / 1.5));
+$('zoom-fit').addEventListener('click', zoomFit);
 document.querySelectorAll('#crop-box .handle').forEach((h) => h.addEventListener('keydown', onHandleKey));
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('crop').hidden && !$('confirm').open && !$('choose').open) closeCrop(); });
-window.addEventListener('resize', () => { if (!$('crop').hidden && crop.img) drawCrop(); });
+window.addEventListener('resize', () => {
+  if ($('crop').hidden || !crop.img || crop.drag || crop.pinch) return;
+  settleTo(atWhole() ? WHOLE : crop.work.crop);
+});
 
 $('item-add').addEventListener('click', () => addItem());
 $('person-add').addEventListener('click', addPerson);
