@@ -1,7 +1,7 @@
-import { parseMoney, parsePercent, formatMoney, centsToInput, computeSplit, splitEven, settleUp } from './split.js?v=2.10.1';
-import { bestParse, pairColumns, textFromWords, wordsFromBlocks, linesFromBlocks, scoreParse } from './parse.js?v=2.10.1';
-import { CHARGE_RE } from './charges.js?v=2.10.1';
-import { toGray, resampleGray, measureSkew } from './image.js?v=2.10.1';
+import { parseMoney, parsePercent, formatMoney, centsToInput, computeSplit, splitEven, settleUp } from './split.js?v=2.10.2';
+import { bestParse, pairColumns, textFromWords, wordsFromBlocks, linesFromBlocks, scoreParse } from './parse.js?v=2.10.2';
+import { CHARGE_RE } from './charges.js?v=2.10.2';
+import { toGray, resampleGray, measureSkew } from './image.js?v=2.10.2';
 
 // Everything lives in this object, in memory only. No localStorage, no cookies,
 // no IndexedDB, no network writes. Refreshing the page wipes it.
@@ -122,7 +122,7 @@ function guard(input, err, check) {
  *   id, name, cents (int | null), rawPrice,
  *   assigned: Map<personId, shares>, uneven,
  *   addon, parentId, open (add-on editor shown),
- *   joined: { base, extra } | null, qty, qtyGuess,
+ *   joined: { base, extra, priceBelow? } | null, qty, qtyGuess,
  *   guess: null | 'guessed' | 'added'   (price came from the subtotal, not confirmed yet)
  *   afterSubtotal (a discount or charge printed below the subtotal; not part of the subtotal check)
  * }
@@ -356,7 +356,7 @@ function drawPeople() {
       return el('li', { class: 'person' },
         el('span', { class: 'person-name', text: p.name }),
         el('button', {
-          type: 'button', class: 'payer-btn', 'aria-pressed': String(paid), 'aria-label': `${p.name} paid`, 'data-key': `payer:${p.id}`,
+          type: 'button', class: paid ? 'payer-btn is-payer' : 'payer-btn', 'aria-label': `${paid ? 'Paid' : 'Mark as payer'}, ${p.name}`, 'data-key': `payer:${p.id}`,
           text: paid ? 'Paid' : 'Mark as payer', onclick: () => togglePayer(p.id),
         }),
         el('button', { type: 'button', class: 'x-btn', 'aria-label': `Remove ${p.name}`, text: '×', 'data-key': `x:${p.id}`, onclick: () => removePerson(p.id) })
@@ -459,8 +459,10 @@ function splitApart(item) {
   const suffix = ` ${extra}`;
   if (item.name.endsWith(suffix)) item.name = item.name.slice(0, -suffix.length);
   else if (item.name === `${base}${suffix}`.slice(0, LIMITS.itemLen)) item.name = base;
+  // When the price was printed on the second line, it goes back to that line.
+  const row = makeItem({ name: extra, cents: item.joined.priceBelow ? item.cents : null });
+  if (item.joined.priceBelow) item.cents = null;
   item.joined = null;
-  const row = makeItem({ name: extra });
   state.items.splice(blockEnd(item), 0, row);
   renderItems();
   renderResults();
@@ -1898,19 +1900,20 @@ function renderAll() {
 /*
  * Photos of the receipt, in memory only. A long receipt can be several photos ("parts").
  * Each record is fixed once made: a new crop makes a new record, so Undo can go back to the old one.
- * photo = { id, file, url, cropUrl, straightUrl, crop, rotation, fine, manual, autoAngle, sample }
+ * photo = { id, file, url, cropUrl, straightUrl, crop, rotation, fine, manual, framed, autoAngle, sample }
  *   rotation  = quarter turns from the crop screen (0/90/180/270)
  *   fine      = the Straighten angle the crop screen turned it by, before cropping (degrees, clockwise)
  *   manual    = true when that angle was set by hand: it's read exactly, nothing turns it further
- *   autoAngle = the lean automatic straightening measured and removed after cropping (0 = none)
+ *   framed    = true when it went through the crop screen, which already straightened it
+ *   autoAngle = the lean the reader measured and removed, for photos that skipped the crop screen (0 = none)
  *   straightUrl = the straightened color photo, shown in place of the photo when set
  */
 const photoPool = new Set();
 const STRAIGHTEN_MIN = 1; // degrees of lean before automatic straightening steps in (finer than the measurement is sure of)
 const CORNER_GRAY = '#9ba3aa'; // fills the corners a turned photo leaves empty
 
-function newPhoto(file, { crop = null, rotation = 0, fine = 0, manual = false, sample = false } = {}) {
-  const photo = { id: newId(), file, url: URL.createObjectURL(file), cropUrl: null, straightUrl: null, crop, rotation, fine, manual, autoAngle: 0, sample };
+function newPhoto(file, { crop = null, rotation = 0, fine = 0, manual = false, framed = false, sample = false } = {}) {
+  const photo = { id: newId(), file, url: URL.createObjectURL(file), cropUrl: null, straightUrl: null, crop, rotation, fine, manual, framed, autoAngle: 0, sample };
   photoPool.add(photo);
   return photo;
 }
@@ -2448,9 +2451,10 @@ async function read(getSource, { darker = false, photo = null } = {}) {
     const source = await getSource();
     gray = grayCanvas(source);
     evened = evenedCanvas(gray);
-    // Automatic straightening, unless the person set the angle by hand (Manual).
+    // Straightening for photos that skipped the crop screen (the sample bill). The crop screen
+    // already turned the others, and measuring again would see the edges of the gray corners.
     // Only the reader's copy is turned here. The color copy is turned for showing.
-    if (photo && !photo.manual) {
+    if (photo && !photo.manual && !photo.framed) {
       const angle = skewOf(evened);
       if (Math.abs(angle) >= STRAIGHTEN_MIN) {
         const sg = turnedCanvas(gray, -angle, '#ffffff');
@@ -3012,7 +3016,7 @@ async function readNew() {
   const { file, kind, back } = crop.pending;
   const img = crop.img;
   const { rotation, fine, manual } = crop.work;
-  const framed = { img, opts: { crop: cropToRead(), rotation, fine, manual } };
+  const framed = { img, opts: { crop: cropToRead(), rotation, fine, manual, framed: true } };
   resetCropGestures();
   crop.img = null; // the reader owns it now
   crop.pending = null;
@@ -3293,7 +3297,7 @@ async function readCrop() {
   const screen = $('crop-canvas');
   screen.width = 0;
   screen.height = 0;
-  const photo = newPhoto(old.file, { crop: r, rotation, fine, manual, sample: old.sample });
+  const photo = newPhoto(old.file, { crop: r, rotation, fine, manual, framed: true, sample: old.sample });
   const parsed = await read(async () => {
     const out = cropCanvas(img, r, rotation, fine);
     if (typeof img.close === 'function') img.close();
@@ -3415,6 +3419,19 @@ $('zoom-out').addEventListener('click', () => zoomBy(1 / 1.5));
 $('zoom-fit').addEventListener('click', zoomFit);
 document.querySelectorAll('#crop-box .handle').forEach((h) => h.addEventListener('keydown', onHandleKey));
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('crop').hidden && !$('confirm').open && !$('choose').open) closeCrop(); });
+// Tab and Shift+Tab stay inside the crop screen while it's open.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Tab' || $('crop').hidden || $('confirm').open || $('choose').open) return;
+  const stops = [...$('crop').querySelectorAll('button, input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+    .filter((n) => !n.disabled && n.getClientRects().length > 0);
+  if (!stops.length) return;
+  const first = stops[0];
+  const last = stops[stops.length - 1];
+  const at = document.activeElement;
+  const inside = $('crop').contains(at);
+  if (e.shiftKey && (at === first || !inside)) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && (at === last || !inside)) { e.preventDefault(); first.focus(); }
+});
 window.addEventListener('resize', () => {
   if ($('crop').hidden || !crop.img || crop.drag || crop.pinch) return;
   settleTo(atWhole() ? WHOLE : crop.work.crop);

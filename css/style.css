@@ -174,7 +174,7 @@ input[type="text"][aria-invalid="true"]:focus { border: 2px solid var(--alert); 
   border-radius: 999px; padding: .3rem .75rem; min-height: 2.25rem;
   border: 1.5px solid #c7cdd2; background: transparent; color: var(--muted); cursor: pointer;
 }
-.payer-btn[aria-pressed="true"] { background: var(--brass); border-color: var(--brass); color: var(--brass-ink); }
+.payer-btn.is-payer { background: var(--brass); border-color: var(--brass); color: var(--brass-ink); }
 .x-btn {
   font: inherit; font-size: 1.25rem; line-height: 1;
   width: 2.5rem; height: 2.5rem; border: 0; border-radius: 8px;
@@ -508,7 +508,7 @@ body.no-scroll { overflow: hidden; }
 .chip { padding: calc(.3rem - .5px) calc(.8rem - .5px); }
 .payer-btn { padding: calc(.3rem - .5px) calc(.75rem - .5px); }
 .chip[aria-pressed="true"],
-.payer-btn[aria-pressed="true"],
+.payer-btn.is-payer,
 .chip.has-steps { background: #E3DBC2; border-color: #7a6430; color: var(--brass-ink); }
 .chip.has-steps { padding: 0 .2rem 0 0; }
 .chip.has-steps .step-btn { background: #ffffffb3; color: var(--brass-ink); }

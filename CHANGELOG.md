@@ -5,6 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.2] - 2026-11-27
+
+### Changed
+
+- Photos framed in the crop screen are not straightened again while reading. The sample bill still is.
+- The payer button's spoken name is its text plus the person's name, like "Mark as payer, Ben" or "Paid, Ben". It no longer reports a pressed state.
+- Tab and Shift+Tab stay inside the crop screen while it is open.
+- The sample receipt names its server.
+
+### Fixed
+
+- "Tender", "cash" and "change" are payment words only below the subtotal. "Tendered" is a payment word anywhere.
+- "Before Tax", "Pre-tax" and "Excl. tax" lines are read as the subtotal, not as tax.
+- A price followed by up to three stray marks is read.
+- Lines that start with a quantity and a bracketed dish number, like "1 (2)", count as quantity lines.
+- On receipts that print quantities, a priced line with no quantity right under a dish with no price is joined to that dish, and the dish gets the price. **Split apart** puts the price back on the second line.
+- On receipts that print quantities, a lone "I" or "l" before "(" at the start of a line is read as a quantity of 1.
+- A tax percent written with a decimal comma is left out of the tax name.
+
 ## [2.10.1] - 2026-11-23
 
 ### Added

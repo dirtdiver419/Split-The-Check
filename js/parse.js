@@ -1,6 +1,6 @@
-import { parseMoney } from './split.js?v=2.10.1';
-import { WORDS } from './words.js?v=2.10.1';
-import { CHARGE_RE } from './charges.js?v=2.10.1';
+import { parseMoney } from './split.js?v=2.10.2';
+import { WORDS } from './words.js?v=2.10.2';
+import { CHARGE_RE } from './charges.js?v=2.10.2';
 
 /*
  * Turns receipt text into items, add-ons, tax, tip, fees and totals.
@@ -17,6 +17,8 @@ const PRICE_AT_END =
   /(\(|-)?\s?\$?\s?(\d{1,3}(?:,\d{3})+[.,]\s?\d{2}|\d{1,6}[.,]\s?\d{2})\)?(-)?(?:\s+[A-Za-z]{1,2})?\s*$/;
 // "$12 50": the reader sometimes turns the decimal point into a space. Only trusted with a $ sign.
 const PRICE_SPACED = /\$\s?(\d{1,6})\s(\d{2})(?:\s+[A-Za-z]{1,2})?\s*$/;
+// Up to three stray marks after a price, separated by a space.
+const TRAILING_JUNK = /\s+[^\p{L}\d\s$]{1,3}\s*$/u;
 
 const RE = {
   subtotal: /\bsub\s*-?\s*total\b|\bsubtl\b|\bsub\s*ttl\b/,
@@ -33,8 +35,13 @@ const RE = {
   billDiscount: /\bcoupon\b|\bdiscount\b|\bpromo(tion)?\b|\border\b|\bcheck\b|\bbill\b|\bloyalty\b|\breward|\bmember|\bemployee\b|\bvoucher\b|\bgift\b|%/,
   void: /\bvoid(ed)?\b|\bcancel(l?ed)?\b|\bdeleted\b|\brefund(ed)?\b/,
   vatIncluded: /\bincl(\.|uded|udes)?\b.*\b(vat|tax|gst|mwst|tva|iva)\b|\b(vat|tax|gst)\b.*\bincl/,
+  // Payment lines. "Tender", "cash" and "change" only below the subtotal (RE.payFooter):
+  // above it they can be dishes ("Chicken Tender", "Tender Greens").
   skip:
-    /\bchange\b|\bcash\b|\btender(ed)?\b|\bvisa\b|\bmaster\s*card\b|\bamex\b|\bdiscover\b|\bcard\b|\bdebit\b|\bcredit\b|\bpayment\b|\bpaid\b|\bauth\b|\bapproval\b|\brounding\b|\bcheck\s*#|\border\s*#/,
+    /\btendered\b|\bvisa\b|\bmaster\s*card\b|\bamex\b|\bdiscover\b|\bcard\b|\bdebit\b|\bcredit\b|\bpayment\b|\bpaid\b|\bauth\b|\bapproval\b|\brounding\b|\bcheck\s*#|\border\s*#/,
+  payFooter: /\bchange\b|\bcash\b|\btender\b/,
+  // "Before Tax 20.50": the subtotal printed again, never a tax line.
+  preTax: /\bbefore\s*tax\b|\bpre\s*-?\s*tax\b|\bexcl(?:uding|\.)?\s*tax\b/,
   cardSlip: /\bvisa\b|\bmaster\s*card\b|\bamex\b|\bdiscover\b|\bauth\b|\bapproval\b|\bsignature\b|\bcontactless\b|\bchip\b/,
 };
 
@@ -45,7 +52,8 @@ const ADDON_WORD = /^(?:(?:add|added|extra|xtra|sub|substitute|with|side\s+of|no
 const NAME_AFTER_NUMBER = /^(?:alarm|bean|cheese|count|ct|grain|island|layer|oz|pc|pcs|piece|seasons|spice|star|treasure|way)\b/i;
 
 const QTY_PREFIX = /^(\d{1,2})\s*([xX×])?\s+(?=[\p{L}\-+*>~(]|\d{1,2}\s+\p{L})/u; // also "1 7 Layer Dip"
-const PLAIN_QTY_LINE = /^\d{1,2}\s+\p{L}/u;
+// A quantity, then the name. Some receipts number their dishes in brackets: "1 (2)Pork Belly".
+const PLAIN_QTY_LINE = /^\d{1,2}\s+[\p{L}({]/u;
 const COL_QTY = /\s(\d{1,2})$/; // a lone number between the name and the price
 const UNIT_LINE = /^\(?\s*(\d{1,2})\s*[@xX×]\s*\$?\s*\)?$/; // "2 @" left after taking the price off "2 @ $12.50"
 const QTY_SUFFIX = /\s+[xX×]\s?(\d{1,2})$/;
@@ -134,14 +142,14 @@ function cleanName(raw) {
 
 /** A tax or fee line's name, without its percentage or leftover punctuation. */
 function chargeName(raw, fallback) {
-  const name = cleanName(raw.replace(/\(?\s*\d+(\.\d+)?\s*%\s*\)?/g, ' '));
+  const name = cleanName(raw.replace(/\(?\s*\d+([.,]\d+)?\s*%\s*\)?/g, ' '));
   return name ? fixSpelling(name) : fallback;
 }
 
 /** A gratuity keeps its printed percent ("Gratuity 18%"), so the row says what it was. */
 function gratuityName(raw) {
   const pct = raw.match(/(\d+(?:\.\d+)?)\s*%/);
-  const name = cleanName(raw.replace(/\(?\s*\d+(\.\d+)?\s*%\s*\)?/g, ' '));
+  const name = cleanName(raw.replace(/\(?\s*\d+([.,]\d+)?\s*%\s*\)?/g, ' '));
   const base = name ? fixSpelling(name) : 'Gratuity';
   return pct ? `${base} ${pct[1]}%` : base;
 }
@@ -161,6 +169,13 @@ function splitPrice(line) {
     const cents = parseMoney(`${m[1]}.${m[2]}`);
     if (cents !== null) return { label: line.slice(0, m.index).trim(), cents };
   }
+  // A few stray marks after the price ("7.25 -\""): read the price without them.
+  // A lone "-" or ")" is left alone, since it can mean a negative amount.
+  const junk = line.match(TRAILING_JUNK);
+  if (junk && !/^\s*[-)]\s*$/.test(junk[0])) {
+    const again = splitPrice(line.slice(0, junk.index));
+    if (again.cents !== null) return again;
+  }
   return { label: line, cents: null };
 }
 
@@ -178,7 +193,8 @@ function takeQuantity(label, printsQty = false, colQty = false) {
     if (unit[1]) qty = Number(unit[1]);
     s = s.slice(0, unit.index).trim();
   }
-  const misread = s.match(/^(?:[lI|]|il|li|1l|l1)\s+(?=\p{Lu})/u); // the reader's take on a "1"
+  // The reader's take on a "1". On receipts that print quantities, also before "(" ("I (4)Bok Choy").
+  const misread = s.match(/^(?:[lI|]|il|li|1l|l1)\s+(?=\p{Lu})/u) || (printsQty ? s.match(/^[lI|]\s+(?=\()/) : null);
   if (misread) {
     s = s.slice(misread[0].length);
     return { qty: 1, qtyGuess: false, rest: s.trim(), hadQty: true };
@@ -329,12 +345,17 @@ export function parseLines(input) {
   let plain = 0;
   let priced = 0;
   let trailing = 0;
+  let afterLost = false; // the line above was a dish with a quantity and no price
   for (const raw of lines) {
     const { label, cents } = splitPrice(String(raw.text ?? '').replace(/\s+/g, ' ').trim());
+    const wrapped = afterLost;
+    afterLost = cents === null && PLAIN_QTY_LINE.test(label) && /\p{L}{2,}/u.test(label);
     if (cents === null || cents <= 0 || !/\p{L}{2,}/u.test(label)) continue;
+    // The rest of a wrapped dish name with the price ("1 Long Noodle" / "Soup (Large) 4.50") isn't a dish line of its own.
+    if (wrapped && !PLAIN_QTY_LINE.test(label)) continue;
     const k = keyFor(label);
     if (RE.item.test(k)) { priced++; continue; }
-    if (RE.subtotal.test(k) || RE.tax.test(k) || RE.tip.test(k) || RE.fee.test(k) || RE.total.test(k) || RE.skip.test(k)) continue;
+    if (RE.subtotal.test(k) || RE.tax.test(k) || RE.tip.test(k) || RE.fee.test(k) || RE.total.test(k) || RE.skip.test(k) || RE.payFooter.test(k)) continue;
     if (ADDON_SYMBOL.test(label) || ADDON_WORD.test(label)) continue;
     priced++;
     if (PLAIN_QTY_LINE.test(label) || /^\d{1,2}\s*[xX×]\s/.test(label) || QTY_SUFFIX.test(label)) plain++;
@@ -369,7 +390,7 @@ export function parseLines(input) {
     }
 
     if (cents !== null) {
-      if (RE.subtotal.test(key)) { out.subtotalCents = cents; footer = true; subtotals++; continue; }
+      if (RE.subtotal.test(key) || RE.preTax.test(key)) { out.subtotalCents = cents; footer = true; subtotals++; continue; }
       if (RE.tax.test(key)) {
         out.taxCents = (out.taxCents ?? 0) + cents;
         out.taxes.push({ name: chargeName(rawLabel, 'Tax'), cents });
@@ -394,7 +415,7 @@ export function parseLines(input) {
         footer = true;
         continue;
       }
-      if (RE.skip.test(key)) continue;
+      if (RE.skip.test(key) || (footer && RE.payFooter.test(key))) continue;
     }
 
     // "2 @ $12.50" on the line under a dish: that dish's quantity, if the math checks out.
@@ -453,6 +474,20 @@ export function parseLines(input) {
       }
       if (footer) { unlabeled.push(cents); continue; } // anything else priced below the subtotal isn't food
 
+      // A long name wrapped on a receipt that prints quantities: "1 Long Noodle" (no price), then
+      // "Soup (Large) 4.50" (no quantity, same size). The price belongs to the dish above.
+      const above = out.items[lastItem];
+      if (printsQty && wasAfterItem && above && above.lost && !above.joined && !hadQty && !symbol
+        && !ADDON_WORD.test(rest) && cents > 0 && name.length <= 30
+        // Same size. A line with no capitals to measure ("(small) 4.50") goes by the x-height alone.
+        && within(xhR, XH_SAME) && (tilt || capR === null || within(capR, CAP_SAME))) {
+        above.joined = { base: above.name, extra: name, priceBelow: true };
+        above.name = `${above.name} ${name}`.slice(0, 60);
+        above.cents = cents;
+        delete above.lost;
+        prevWasLastItem = false;
+        continue;
+      }
       const isAddon = lastItem !== -1 && (symbol || ADDON_WORD.test(rest) || clearlySmaller);
       if (isAddon) {
         if (cents === 0) continue; // a free modifier is a cooking note, not a charge
@@ -477,7 +512,7 @@ export function parseLines(input) {
     // A quantity up front means a new item whose price the reader lost.
     // If sizes are known it has to be dish-sized; a smaller "3 Pcs Corn Tortilla" is a description.
     if (hadQty && (xhR === null || xhR >= XH_SAME[0]) && !clearlySmaller) {
-      push({ name, cents: null, qty, qtyGuess });
+      push({ name, cents: null, qty, qtyGuess, lost: printsQty });
       inDishBlock = true;
       lastItem = out.items.length - 1;
       lastItemLine = raw;
@@ -499,6 +534,8 @@ export function parseLines(input) {
     }
     // Anything else without a price is a description, header or footer line.
   }
+
+  for (const i of out.items) delete i.lost;
 
   // A discount printed between "Subtotal before discounts" and the final "Subtotal" is part of that subtotal.
   for (const i of out.items) {
